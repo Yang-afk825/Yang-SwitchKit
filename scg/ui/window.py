@@ -125,7 +125,9 @@ class App(tk.Tk):
         titles.pack(side="left")
         ttk.Label(titles, text=APP_NAME,
                   style="BannerTitle.TLabel").pack(anchor="w")
-        ttk.Label(titles, text="交换机配置命令一键生成　|　思科 · 华为 · H3C · 锐捷　|　22 个配置场景 · 逐条命令详解",
+        # 场景数不要写死，从注册表取，加了场景这里自动跟着变
+        ttk.Label(titles, text="交换机配置命令一键生成　|　思科 · 华为 · H3C · 锐捷　|　"
+                              f"{len(registry.SCENARIOS)} 个配置场景 · 逐条命令详解",
                   style="BannerSub.TLabel").pack(anchor="w", pady=(T.px(3), 0))
 
         bar = tk.Frame(banner, background=T.PANEL)
@@ -789,7 +791,7 @@ class App(tk.Tk):
         if not text:
             self.out.insert("end", "# 左侧是生成结果，右侧是参数。\n"
                                    "# 填好某个场景的参数后，点它右上角的「生成脚本」，\n"
-                                   "# 或者在右上方点「生成全部场景」一次生成 22 个场景。\n",
+                                   f"# 或者在右上方点「生成全部场景」一次生成 {len(registry.SCENARIOS)} 个场景。\n",
                             "note")
         else:
             for line in text.splitlines():
@@ -987,7 +989,7 @@ class App(tk.Tk):
         return [
             "━━ 这个工具箱是干什么的 ━━",
             "",
-            "把「配一台交换机」这件事拆成 22 个常见场景，选好厂商、填好参数，",
+            "把「配一台交换机」这件事拆成 %d 个常见场景，选好厂商、填好参数，" % len(registry.SCENARIOS),
             "一键生成可以直接粘贴到设备的配置命令；同一批命令还能逐条看详解，",
             "或者横着对比四家厂商同一件事分别怎么写。",
             "",
@@ -1042,7 +1044,7 @@ class App(tk.Tk):
             f"关于 {APP_NAME}",
             f"{APP_NAME}\n"
             f"交换机配置命令一键生成　{APP_VERSION}\n\n"
-            "覆盖 思科 / 华为 / H3C / 锐捷 四厂商，22 个高频配置场景，\n"
+            f"覆盖 思科 / 华为 / H3C / 锐捷 四厂商，{len(registry.SCENARIOS)} 个高频配置场景，\n"
             "一键生成配置脚本，同时给出逐条设备命令详解与四厂商命令对照。\n\n"
             "命令以各厂商官方命令手册为准逐条核对；\n"
             "凡随软件版本变化的命令，均在结果中标注版本差异，\n"
