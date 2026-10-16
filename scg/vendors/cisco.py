@@ -1234,6 +1234,175 @@ def _mplsvpn(p, scenario) -> GenResult:
     return b.done()
 
 
+# --------------------------------------------------------------------------
+# 第四批：接入认证 / 供电 / QoS / IPv6
+# --------------------------------------------------------------------------
+
+def _dot1x(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    ip = B.ensure(p.get("radius_ip"), "RADIUS 服务器地址")
+    key = B.ensure(p.get("radius_key"), "RADIUS 共享密钥")
+    port_list = ports.expand(p.get("ports", ""), VENDOR.key)
+    if not port_list:
+        raise ValueError("请填写受控端口。")
+
+    b.block("配置 RADIUS 服务器", [
+        _ENTER, "aaa new-model",
+        "radius server SCG-RADIUS",
+        f" address ipv4 {ip} auth-port 1812 acct-port 1813",
+        f" key {key}",
+        " exit",
+        "aaa authentication dot1x default group radius",
+        "aaa authorization network default group radius",
+        "dot1x system-auth-control",
+        "end",
+    ], comment="思科要先 aaa new-model 打开 AAA，再定义 radius server，"
+               "最后用 dot1x system-auth-control 全局开启 802.1X。"
+               "老版本 IOS 用的是 radius-server host ... key ... 那套命令。")
+    b.warn("共享密钥在脚本里是明文，交付后请改用其他方式保存或立即更换。")
+
+    body = ["switchport mode access",
+            f"authentication port-control {p.get('port_control', 'auto')}",
+            "dot1x pae authenticator"]
+    if p.get("port_method", "macbased") == "macbased":
+        body.append("dot1x host-mode multi-host")
+    if p.get("guest_vlan"):
+        body.append(f"dot1x guest-vlan {p['guest_vlan']}")
+    b.block("端口开启 802.1X", [_ENTER] + _if_blocks(port_list, body) + ["end"],
+            comment="dot1x pae authenticator 表示这个端口扮演认证方角色，"
+                    "思科的 802.1X 必须配它。port-control auto 才是「认证通过才放行」。")
+
+    b.block("保存配置", _SAVE)
+    b.block("核对认证状态",
+            [_ENTER, "show dot1x all summary", "show authentication sessions", "end"],
+            comment="看端口状态是 AUTHORIZED 还是 UNAUTHORIZED。")
+    if p.get("max_user"):
+        b.note(f"单端口最大用户数填了 {p['max_user']}，但思科没有对应的命令——"
+               f"它是靠 host-mode（multi-host / multi-domain / multi-auth）来控制的，"
+               f"请按业务需要选择主机模式。")
+    b.note("思科默认用 EAP 中继，具体认证方法由 RADIUS 服务器协商，"
+           "不需要在交换机上指定 chap / pap。")
+    b.warn("802.1X 与端口安全、IP 源防护等接入控制功能同时配置时，"
+           "报文要同时满足所有检查规则才能通过，排障时注意。")
+    return b.done()
+
+
+def _poe(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    port_list = ports.expand(p.get("ports", ""), VENDOR.key)
+    if not port_list:
+        raise ValueError("请填写供电端口。")
+    action = p.get("action", "enable")
+
+    if action == "disable":
+        body = ["power inline never"]
+    else:
+        body = ["power inline auto"]
+        if p.get("max_power"):
+            body = [f"power inline auto max {p['max_power']}"]
+
+    b.block("配置 PoE 供电", [_ENTER] + _if_blocks(port_list, body) + ["end"],
+            comment="思科只有 auto / never / static 三个档："
+                    "auto 让设备自己协商，never 完全不供电，static 按配置功率预留。"
+                    "max 后面的单位是毫瓦。")
+    b.block("核对供电状态",
+            [_ENTER, "show power inline", "show power inline module 1", "end"],
+            comment="确认端口在供电、实际功率是多少、预算还剩多少。")
+    b.block("保存配置", _SAVE)
+    if p.get("priority"):
+        b.note("思科没有跟 H3C / 华为对应的端口供电优先级命令，"
+               "供电不足时的取舍由平台自己决定，这里没有生成。")
+    if action == "disable":
+        b.warn("power inline never 会让 AP、摄像头这类设备直接断电，"
+               "确认不是生产设备再执行。")
+    return b.done()
+
+
+def _qos_priority(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    port_list = ports.expand(p.get("ports", ""), VENDOR.key)
+    if not port_list:
+        raise ValueError("请填写生效端口。")
+    trust = p.get("trust", "dscp")
+
+    lines = [_ENTER, "mls qos"]
+    if trust == "none":
+        lines += _if_blocks(port_list, ["no mls qos trust"])
+    else:
+        keyword = "cos" if trust == "dot1p" else "dscp"
+        lines += _if_blocks(port_list, [f"mls qos trust {keyword}"])
+    lines.append("end")
+    b.block("开启 QoS 并配置信任模式", lines,
+            comment="mls qos 是总开关，没开的话后面的信任和标记都不生效。"
+                    "思科里 802.1p 对应的关键字是 cos（不是 dot1p）。")
+
+    if p.get("acl_id"):
+        acl = B.ensure(p.get("acl_id"), "ACL 编号")
+        dscp = B.ensure(p.get("dscp") or "af11", "DSCP 值")
+        direction = p.get("direction", "inbound")
+        b.block("定义 class-map 与 policy-map", [
+            _ENTER,
+            "class-map match-any SCG-CLS",
+            f" match access-group {acl}", " exit",
+            "policy-map SCG-POL",
+            " class SCG-CLS",
+            f"  set dscp {dscp}", "  exit",
+            " exit", "end",
+        ], comment="class-map 挑流量（这里按 ACL 编号匹配），"
+                   f"policy-map 里用 set dscp 把匹配到的流量重标记成 {dscp}。")
+        b.block("把策略应用到端口",
+                [_ENTER] + _if_blocks(port_list, [f"service-policy {direction} SCG-POL"])
+                + ["end"],
+                comment="入方向应用在接终端的口上，标记要在入口做。")
+        b.note(f"ACL {acl} 需要你先建好，可以用「ACL 访问控制」那条场景生成。")
+
+    b.block("保存配置", _SAVE)
+    b.block("核对结果",
+            [_ENTER, "show mls qos interface", "show policy-map interface", "end"],
+            comment="确认信任模式生效、策略有命中计数。")
+    b.note("有些 Catalyst 平台的命令写作 qos trust 而不是 mls qos trust，"
+           "下发前用 ? 确认本机写法。")
+    return b.done()
+
+
+def _ipv6(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    vlan = B.ensure(p.get("svlan"), "三层接口 VLAN")
+    addr = B.ensure(p.get("address"), "IPv6 地址")
+    prefix = str(p.get("prefix") or "64")
+    iface = B.l3_iface(VENDOR.key, vlan)
+    routes = B.parse_routes6(p.get("routes", ""))
+
+    lines = [_ENTER, "ipv6 unicast-routing", "ipv6 cef",
+             f"interface {iface}",
+             " ipv6 enable",
+             f" ipv6 address {addr}/{prefix}"]
+    if not B.truthy(p.get("nd_ra")):
+        lines.append(" ipv6 nd ra suppress")
+    lines.append(" end")
+    b.block("开启 IPv6 并配置接口地址", lines,
+            comment="思科必须先 ipv6 unicast-routing，否则接口配了地址也不转发 IPv6 报文，"
+                    "这是最容易漏的一步。思科默认就发路由通告，"
+                    "不要发才用 ipv6 nd ra suppress。")
+
+    if routes:
+        lines = [_ENTER]
+        for dest, nexthop in routes:
+            lines.append(f"ipv6 route {dest} {nexthop}")
+        lines.append("end")
+        b.block("配置 IPv6 静态路由", lines,
+                comment="思科的 IPv6 路由写成 ipv6 route 前缀/长度 下一跳，"
+                        "前缀长度直接跟在地址后面。")
+
+    b.block("保存配置", _SAVE)
+    b.block("核对结果", [
+        _ENTER, "show ipv6 interface brief", "show ipv6 route",
+        "show ipv6 neighbors", "end",
+    ], comment="看接口地址、路由表和邻居表三项。")
+    b.note("接口会自动生成 fe80:: 开头的链路本地地址，不要禁用。")
+    return b.done()
+
+
 _HANDLERS = {
     "vlan_port": _vlan_port,
     "lag": _lag,
@@ -1260,6 +1429,10 @@ _HANDLERS = {
     "isis": _isis,
     "bgp": _bgp,
     "mplsvpn": _mplsvpn,
+    "dot1x": _dot1x,
+    "poe": _poe,
+    "qos_priority": _qos_priority,
+    "ipv6": _ipv6,
 }
 
 

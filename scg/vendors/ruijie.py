@@ -1203,6 +1203,163 @@ def _mplsvpn(p, scenario) -> GenResult:
     return b.done()
 
 
+# --------------------------------------------------------------------------
+# 第四批：接入认证 / 供电 / QoS / IPv6
+# --------------------------------------------------------------------------
+
+def _dot1x(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    ip = B.ensure(p.get("radius_ip"), "RADIUS 服务器地址")
+    key = B.ensure(p.get("radius_key"), "RADIUS 共享密钥")
+    port_list = ports.expand(p.get("ports", ""), VENDOR.key)
+    if not port_list:
+        raise ValueError("请填写受控端口。")
+
+    b.block("配置 RADIUS 与 AAA", [
+        _ENTER, "aaa new-model",
+        f"radius-server host {ip} key {key}",
+        "aaa authentication dot1x default group radius",
+        "aaa authorization network default group radius",
+        "dot1x authentication default group radius",
+        "end",
+    ], comment="锐捷的 RADIUS 配置比思科简单：一条 radius-server host 就把地址和密钥都写了。"
+               "dot1x authentication default group radius 指定默认走 RADIUS 认证。")
+    b.warn("共享密钥在脚本里是明文，交付后请改用其他方式保存或立即更换。")
+    b.note("部分 RGOS 版本的 dot1x authentication default 命令不存在，"
+           "只靠 aaa authentication dot1x default group radius 也够用，"
+           "下发前用 ? 确认。")
+
+    body = ["dot1x"]
+    if p.get("port_method", "macbased") == "portbased":
+        body.append("dot1x port-method portbased")
+    body.append(f"dot1x port-control {p.get('port_control', 'auto')}")
+    if p.get("guest_vlan"):
+        body.append(f"dot1x guest-vlan {p['guest_vlan']}")
+    b.block("端口开启 802.1X", [_ENTER] + _if_blocks(port_list, body) + ["end"],
+            comment="锐捷缺省的接入控制方式就是基于 MAC，"
+                    "选 portbased 时才需要显式配 dot1x port-method portbased。")
+
+    b.block("保存配置", _SAVE)
+    b.block("核对认证状态",
+            [_ENTER, "show dot1x", "show dot1x summary", "end"],
+            comment="看端口在不在跑 802.1X、有没有在线用户。")
+    if p.get("max_user"):
+        b.note(f"单端口最大用户数填了 {p['max_user']}，"
+               f"锐捷对应的命令随版本不同，本工具没有生成，请用 ? 确认。")
+    b.note("锐捷、思科都默认走 EAP 中继，认证方法由 RADIUS 服务器协商。")
+    return b.done()
+
+
+def _poe(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    port_list = ports.expand(p.get("ports", ""), VENDOR.key)
+    if not port_list:
+        raise ValueError("请填写供电端口。")
+    action = p.get("action", "enable")
+
+    body: list[str] = []
+    if action == "disable":
+        body.append("no poe enable")
+    else:
+        body.append("poe enable")
+        body.append(f"poe priority {p.get('priority', 'high')}")
+
+    b.block("配置 PoE 供电", [_ENTER] + _if_blocks(port_list, body) + ["end"],
+            comment="poe priority 决定整机供电不足时的取舍顺序："
+                    "critical 最后断电，low 最先断电。")
+    b.block("核对供电状态",
+            [_ENTER, "show poe interfaces", "show poe power", "end"],
+            comment="确认端口在供电、功率是多少、有没有超预算。")
+    b.block("保存配置", _SAVE)
+    if p.get("max_power"):
+        b.note(f"单口功率上限填了 {p['max_power']} 但本工具没有生成——"
+               f"锐捷的限制命令随型号差异较大，请用 ? 确认本机写法后手工补配。")
+    if action == "disable":
+        b.warn("关闭 PoE 会让 AP、摄像头这类设备直接断电，确认不是生产设备再执行。")
+    return b.done()
+
+
+def _qos_priority(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    port_list = ports.expand(p.get("ports", ""), VENDOR.key)
+    if not port_list:
+        raise ValueError("请填写生效端口。")
+    trust = p.get("trust", "dscp")
+
+    lines = [_ENTER, "mls qos"]
+    if trust == "none":
+        lines += _if_blocks(port_list, ["no mls qos trust"])
+    else:
+        keyword = "cos" if trust == "dot1p" else "dscp"
+        lines += _if_blocks(port_list, [f"mls qos trust {keyword}"])
+    lines.append("end")
+    b.block("开启 QoS 并配置信任模式", lines,
+            comment="锐捷与思科同源，先 mls qos 开总开关，再配信任模式。"
+                    "802.1p 对应的关键字是 cos。")
+
+    if p.get("acl_id"):
+        acl = B.ensure(p.get("acl_id"), "ACL 编号")
+        dscp = B.ensure(p.get("dscp") or "af11", "DSCP 值")
+        direction = p.get("direction", "inbound")
+        b.block("定义 class-map 与 policy-map", [
+            _ENTER,
+            "class-map match-any SCG-CLS",
+            f" match access-group {acl}", " exit",
+            "policy-map SCG-POL",
+            " class SCG-CLS",
+            f"  set dscp {dscp}", "  exit",
+            " exit", "end",
+        ], comment="class-map 挑流量，policy-map 里用 set dscp 重标记。")
+        b.block("把策略应用到端口",
+                [_ENTER] + _if_blocks(port_list, [f"service-policy {direction} SCG-POL"])
+                + ["end"],
+                comment="入方向应用在接终端的口上。")
+        b.note(f"ACL {acl} 需要你先建好，可以用「ACL 访问控制」那条场景生成。")
+
+    b.block("保存配置", _SAVE)
+    b.block("核对结果",
+            [_ENTER, "show mls qos interface", "show policy-map interface", "end"],
+            comment="确认信任模式生效、策略有命中计数。")
+    b.note("部分 RGOS 版本的信任命令写作 qos trust，下发前用 ? 确认。")
+    return b.done()
+
+
+def _ipv6(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    vlan = B.ensure(p.get("svlan"), "三层接口 VLAN")
+    addr = B.ensure(p.get("address"), "IPv6 地址")
+    prefix = str(p.get("prefix") or "64")
+    iface = B.l3_iface(VENDOR.key, vlan)
+    routes = B.parse_routes6(p.get("routes", ""))
+
+    lines = [_ENTER, "ipv6 unicast-routing", "ipv6 cef",
+             f"interface {iface}",
+             " ipv6 enable",
+             f" ipv6 address {addr}/{prefix}"]
+    if not B.truthy(p.get("nd_ra")):
+        lines.append(" ipv6 nd ra suppress")
+    lines.append("end")
+    b.block("开启 IPv6 并配置接口地址", lines,
+            comment="锐捷和思科一样，必须先 ipv6 unicast-routing 才能转发 IPv6 报文。"
+                    "默认发路由通告，不要发才用 ipv6 nd ra suppress。")
+
+    if routes:
+        lines = [_ENTER]
+        for dest, nexthop in routes:
+            lines.append(f"ipv6 route {dest} {nexthop}")
+        lines.append("end")
+        b.block("配置 IPv6 静态路由", lines,
+                comment="锐捷的 IPv6 静态路由写作 ipv6 route 前缀/长度 下一跳。")
+
+    b.block("保存配置", _SAVE)
+    b.block("核对结果", [
+        _ENTER, "show ipv6 interface brief", "show ipv6 route",
+        "show ipv6 neighbors", "end",
+    ], comment="看接口地址、路由表和邻居表三项。")
+    b.note("接口会自动生成 fe80:: 开头的链路本地地址，不要禁用。")
+    return b.done()
+
+
 _HANDLERS = {
     "vlan_port": _vlan_port,
     "lag": _lag,
@@ -1229,6 +1386,10 @@ _HANDLERS = {
     "isis": _isis,
     "bgp": _bgp,
     "mplsvpn": _mplsvpn,
+    "dot1x": _dot1x,
+    "poe": _poe,
+    "qos_priority": _qos_priority,
+    "ipv6": _ipv6,
 }
 
 

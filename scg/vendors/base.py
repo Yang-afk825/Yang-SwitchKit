@@ -480,6 +480,25 @@ def parse_networks(text: str) -> list[tuple[str, int]]:
     return out
 
 
+def parse_routes6(text: str) -> list[tuple[str, str]]:
+    """IPv6 静态路由，每行 ``目标前缀/长度 下一跳 [优先级]``。
+
+    原样保留写法（IPv6 前缀和长度四家基本一致），不做地址规范化。
+    """
+    out: list[tuple[str, str]] = []
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        toks = line.split()
+        if len(toks) < 2:
+            raise ValueError(f"IPv6 路由需要「目标前缀/长度 下一跳」两段：{line}")
+        if "/" not in toks[0]:
+            raise ValueError(f"IPv6 路由的目标要带前缀长度，写成 ::/64 这种形式：{line}")
+        out.append((toks[0], toks[1]))
+    return out
+
+
 def id_or_name(acl_id: str) -> str:
     return (acl_id or "").strip()
 

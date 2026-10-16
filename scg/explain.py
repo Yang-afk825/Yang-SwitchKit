@@ -1975,11 +1975,11 @@ CATALOG: tuple[Doc, ...] = (
               "严重时会造成路由环路。",
       forms={
           H: (F(r"^import-route\s+", "import-route { direct | static | ospf <进程> }"),
-              F(r"^  import-route\s+", "import-route { direct | static | ospf <进程> }")),
+              F(r"^import-route\s+", "import-route { direct | static | ospf <进程> }")),
           W: (F(r"^import-route\s+", "import-route { direct | static | ospf <进程> }"),
-              F(r"^  import-route\s+", "import-route { direct | static | ospf <进程> }")),
-          C: F(r"^ ?redistribute\s+", "redistribute { connected | static | ospf <进程> }"),
-          R: F(r"^ ?redistribute\s+", "redistribute { connected | static | ospf <进程> }"),
+              F(r"^import-route\s+", "import-route { direct | static | ospf <进程> }")),
+          C: F(r"^redistribute\s+", "redistribute { connected | static | ospf <进程> }"),
+          R: F(r"^redistribute\s+", "redistribute { connected | static | ospf <进程> }"),
       }),
 
     D("进入 / 退出地址族视图", "三层",
@@ -2036,6 +2036,275 @@ CATALOG: tuple[Doc, ...] = (
           W: F(r"^network\s+\S+\s+\d+\.\d+\.\d+\.\d+$", "network <网段> <点分掩码>"),
           C: F(r"^network\s+\S+\s+mask\s+\d+\.\d+\.\d+\.\d+$", "network <网段> mask <点分掩码>"),
           R: F(r"^network\s+\S+\s+mask\s+\d+\.\d+\.\d+\.\d+$", "network <网段> mask <点分掩码>"),
+      }),
+
+    # ==================================================================
+    # 第四批：802.1X 认证
+    # ==================================================================
+
+    D("802.1X 总开关", "安全",
+      "打开 802.1X 接入认证功能。开之前端口收到什么就放行什么，"
+      "开之后终端必须先过认证交换机才放行数据流量。",
+      caution="H3C 要开两处：全局一条 dot1x、接口下再来一条 dot1x，少任何一处都不生效。"
+              "华为是接口下 dot1x enable，没有全局开关。",
+      forms={
+          H: (F(r"^dot1x$", "dot1x", "全局开启；接口下还要再来一条 dot1x。"),
+              F(r"^undo dot1x$", "undo dot1x")),
+          W: F(r"^dot1x enable$", "dot1x enable", "接口下开启，华为没有全局开关。"),
+          C: (F(r"^aaa new-model$", "aaa new-model", "思科 / 锐捷要先打开 AAA。"),
+              F(r"^dot1x system-auth-control$", "dot1x system-auth-control",
+                "全局开启 802.1X。")),
+          R: (F(r"^dot1x$", "dot1x", "接口下开启 802.1X。"),
+              F(r"^aaa new-model$", "aaa new-model"),
+              F(r"^dot1x authentication default group radius$",
+                "dot1x authentication default group radius",
+                "指定默认走 RADIUS 认证。")),
+      }),
+
+    D("RADIUS 服务器配置", "安全",
+      "告诉交换机认证服务器在哪、共享密钥是什么。"
+      "交换机收到终端的账号密码后，是转给 RADIUS 服务器去判的。",
+      params=(("服务器地址", "RADIUS 服务器的地址，交换机要能访问到它。"),
+              ("共享密钥", "交换机与服务器两边必须完全一致，不一致认证永远失败。")),
+      caution="共享密钥是明文写在配置里的，交付后请换成密文保存或立即更换。",
+      forms={
+          H: (F(r"^radius scheme\s+", "radius scheme <方案名>"),
+              F(r"^primary authentication\s+", "primary authentication <服务器地址>"),
+              F(r"^key authentication\s+", "key authentication { cipher | simple } <密钥>"),
+              F(r"^user-name-format\s+", "user-name-format { with-domain | without-domain }",
+                "without-domain 表示用户名不带 @域名 后缀发给服务器。")),
+          W: (F(r"^radius-server template\s+", "radius-server template <模板名>"),
+              F(r"^radius-server authentication\s+", "radius-server authentication <地址> 1812"),
+              F(r"^radius-server accounting\s+", "radius-server accounting <地址> 1813"),
+              F(r"^radius-server shared-key\s+", "radius-server shared-key { cipher | simple } <密钥>")),
+          C: (F(r"^radius server\s+", "radius server <名称>"),
+              F(r"^address ipv4\s+", "address ipv4 <地址> auth-port 1812 acct-port 1813"),
+              F(r"^key\s+", "key <密钥>",
+                "老版本 IOS 写作 radius-server host <地址> key <密钥>。")),
+          R: F(r"^radius-server host\s+", "radius-server host <地址> key <密钥>",
+               "锐捷一条命令就把地址和密钥都写了，比思科简单。"),
+      }),
+
+    D("认证域与认证授权", "安全",
+      "认证域负责把接入用户引到指定的 RADIUS 方案上；"
+      "AAA 那条命令则声明「认证和授权都走 radius 组」。",
+      params=(("域名", "终端上填的账号要带 @域名 后缀，或把该域设为默认域。"),),
+      forms={
+          H: (F(r"^domain\s+", "domain <域名>"),
+              F(r"^authentication lan-access\s+", "authentication lan-access radius-scheme <方案名>"),
+              F(r"^authorization lan-access\s+", "authorization lan-access radius-scheme <方案名>")),
+          W: (F(r"^authentication-scheme\s+", "authentication-scheme <方案名>"),
+              F(r"^authentication-mode\s+", "authentication-mode radius"),
+              F(r"^domain\s+", "domain <域名>"),
+              F(r"^radius-server\s+", "radius-server <模板名>")),
+          C: (F(r"^aaa authentication dot1x\s+", "aaa authentication dot1x default group radius"),
+              F(r"^aaa authorization network\s+", "aaa authorization network default group radius")),
+          R: (F(r"^aaa authentication dot1x\s+", "aaa authentication dot1x default group radius"),
+              F(r"^aaa authorization network\s+", "aaa authorization network default group radius")),
+      }),
+
+    D("端口 802.1X 接入控制", "安全",
+      "决定这个端口怎么认人、以及没认证通过时是放行还是拦掉。",
+      params=(("接入控制方式", "macbased 一个端口可接多台；portbased 首个用户通过后整口放行。"),
+              ("授权状态", "auto 认证通过才放行；authorized-force 直接放行；"
+                           "unauthorized-force 全部拦掉。")),
+      forms={
+          H: (F(r"^dot1x port-method\s+", "dot1x port-method { macbased | portbased }",
+                "缺省就是 macbased。"),
+              F(r"^dot1x port-control\s+", "dot1x port-control { auto | authorized-force | unauthorized-force }"),
+              F(r"^dot1x guest-vlan\s+", "dot1x guest-vlan <VLAN号>",
+                "未认证终端被放进这个 VLAN，可以只让它访问认证页面。"),
+              F(r"^dot1x max-user\s+", "dot1x max-user <数量>"),
+              F(r"^dot1x mac-bypass$", "dot1x mac-bypass",
+                "不支持 802.1X 的哑终端靠 MAC 地址放行。")),
+          W: (F(r"^dot1x port-method\s+", "dot1x port-method { macbased | portbased }"),
+              F(r"^dot1x port-control\s+", "dot1x port-control { auto | authorized-force | unauthorized-force }"),
+              F(r"^dot1x guest-vlan\s+", "dot1x guest-vlan <VLAN号>"),
+              F(r"^dot1x max-user\s+", "dot1x max-user <数量>")),
+          C: (F(r"^dot1x pae authenticator$", "dot1x pae authenticator",
+                "声明端口扮演认证方角色，思科必须配这条。"),
+              F(r"^authentication port-control\s+", "authentication port-control { auto | force-authorized | force-unauthorized }",
+                "老版本写作 dot1x port-control。"),
+              F(r"^dot1x host-mode\s+", "dot1x host-mode { multi-host | multi-domain | multi-auth }",
+                "思科靠主机模式控制一个端口下的用户数，没有 max-user 这种命令。"),
+              F(r"^dot1x guest-vlan\s+", "dot1x guest-vlan <VLAN号>")),
+          R: (F(r"^dot1x port-control\s+", "dot1x port-control { auto | authorized-force | unauthorized-force }"),
+              F(r"^dot1x port-method\s+", "dot1x port-method { macbased | portbased }"),
+              F(r"^dot1x guest-vlan\s+", "dot1x guest-vlan <VLAN号>")),
+      }),
+
+    D("查看 802.1X 状态", "安全",
+      "看端口在不在跑 802.1X、终端认证过了没、当前有哪些在线用户。",
+      caution="认证失败先查三样：交换机能不能通到 RADIUS 服务器、共享密钥一致不一致、"
+              "终端上的 802.1X 客户端有没有开。",
+      forms={
+          H: (F(r"^display dot1x", "display dot1x [ interface <接口> | connection ]"),
+              F(r"^display access-user", "display access-user")),
+          W: (F(r"^display dot1x", "display dot1x"),
+              F(r"^display access-user", "display access-user")),
+          C: F(r"^show dot1x", "show dot1x all summary"),
+          R: F(r"^show dot1x", "show dot1x / show dot1x summary"),
+      }),
+
+    # ==================================================================
+    # 第四批：PoE 与 IPv6
+    # ==================================================================
+
+    D("PoE 供电开关", "运维",
+      "控制端口要不要给下挂设备供电。AP、摄像头、IP 电话都靠它取电。",
+      caution="关闭 PoE 会让设备直接断电；端口被 shutdown 时 PoE 也会跟着断。",
+      forms={
+          H: (F(r"^poe enable$", "poe enable"),
+              F(r"^undo poe enable$", "undo poe enable")),
+          W: (F(r"^poe enable$", "poe enable"),
+              F(r"^undo poe enable$", "undo poe enable")),
+          C: (F(r"^power inline auto$", "power inline auto",
+                "auto 让设备自己协商功率。"),
+              F(r"^power inline never$", "power inline never", "完全不供电。"),
+              F(r"^power inline auto max\s+", "power inline auto max <毫瓦>",
+                "max 后面是毫瓦，例如 30000 就是 30 瓦。")),
+          R: (F(r"^poe enable$", "poe enable"),
+              F(r"^no poe enable$", "no poe enable")),
+      }),
+
+    D("PoE 供电优先级", "运维",
+      "整机 PoE 功率是有限的，供电不足时按优先级断电："
+      "critical 最后断电，low 最先断电。",
+      caution="关键设备（AP、摄像头）给 high 或 critical，"
+              "普通设备给 low，避免一台新接入的设备把关键业务顶掉。",
+      forms={
+          H: F(r"^poe priority\s+", "poe priority { critical | high | low }"),
+          W: F(r"^poe priority\s+", "poe priority { critical | high | low }"),
+          R: F(r"^poe priority\s+", "poe priority { critical | high | low }"),
+      }),
+
+    D("查看 PoE 供电状态", "运维",
+      "看端口在不在供电、实际给出多少功率、整机预算还剩多少。",
+      forms={
+          H: F(r"^display poe", "display poe interface / display poe interface power"),
+          W: F(r"^display poe", "display poe power / display poe interface"),
+          C: F(r"^show power inline", "show power inline [ module <槽位> ]"),
+          R: F(r"^show poe", "show poe interfaces / show poe power"),
+      }),
+
+    D("IPv6 路由转发开关", "三层",
+      "打开 IPv6 单播路由转发。思科 / 锐捷必须显式打开，"
+      "否则接口配了 IPv6 地址也只能本地通信，转发不了。",
+      caution="这是思科 / 锐捷最容易漏的一步——命令敲了、地址也配了，就是不通。",
+      forms={
+          C: (F(r"^ipv6 unicast-routing$", "ipv6 unicast-routing"),
+              F(r"^ipv6 cef$", "ipv6 cef", "打开 IPv6 的快速转发。")),
+          R: (F(r"^ipv6 unicast-routing$", "ipv6 unicast-routing"),
+              F(r"^ipv6 cef$", "ipv6 cef")),
+      }),
+
+    D("IPv6 接口地址", "三层",
+      "给三层接口配 IPv6 地址。IPv6 地址长度是 128 位，"
+      "接口还会自动生成一个 fe80:: 开头的链路本地地址，邻居发现协议靠它工作。",
+      params=(("地址", "例如 2001:db8:10::1，db8 是文档专用前缀。"),
+              ("前缀长度", "统一用 /64，这是局域网的标准长度。")),
+      caution="链路本地地址不要禁用，禁了邻居发现就失效了。",
+      forms={
+          H: (F(r"^ipv6 address\s+", "ipv6 address <地址> <前缀长度>"),
+              F(r"^undo ipv6 nd ra halt$", "undo ipv6 nd ra halt",
+                "Comware 默认抑制路由通告，接终端的接口要放开才会发 RA。")),
+          W: (F(r"^ipv6 enable$", "ipv6 enable", "先打开接口的 IPv6 能力。"),
+              F(r"^ipv6 address\s+", "ipv6 address <地址> <前缀长度>"),
+              F(r"^undo ipv6 nd ra halt$", "undo ipv6 nd ra halt")),
+          C: (F(r"^ipv6 enable$", "ipv6 enable"),
+              F(r"^ipv6 address\s+", "ipv6 address <地址>/<前缀长度>"),
+              F(r"^ipv6 nd ra suppress$", "ipv6 nd ra suppress",
+                "思科默认就发路由通告，不要发才用这条抑制。")),
+          R: (F(r"^ipv6 enable$", "ipv6 enable"),
+              F(r"^ipv6 address\s+", "ipv6 address <地址>/<前缀长度>"),
+              F(r"^ipv6 nd ra suppress$", "ipv6 nd ra suppress")),
+      }),
+
+    D("查看 IPv6 运行情况", "三层",
+      "看接口地址、IPv6 路由表和邻居表三项。"
+      "邻居表就是 IPv6 里的 ARP 表。",
+      forms={
+          H: F(r"^display ipv6", "display ipv6 { interface brief | routing-table | neighbors }"),
+          W: F(r"^display ipv6", "display ipv6 { interface brief | routing-table | neighbors }"),
+          C: F(r"^show ipv6", "show ipv6 { interface brief | route | neighbors }"),
+          R: F(r"^show ipv6", "show ipv6 { interface brief | route | neighbors }"),
+      }),
+
+    # ==================================================================
+    # 第四批：QoS 信任与标记
+    # ==================================================================
+
+    D("QoS 总开关与信任模式", "运维",
+      "先打开 QoS，再告诉交换机该相信报文里的哪个优先级字段。"
+      "不做这一步，设备会用端口优先级给所有流量兜底，整网优先级其实是一样的。",
+      params=(("信任模式", "dscp 是三层 IP 报文的标记；dot1p（思科叫 cos）是二层 VLAN Tag 里的标记。"),),
+      caution="信任模式要配在接入侧端口上，且要在策略应用之前配好，"
+              "否则后面的分类拿不到有效输入。",
+      forms={
+          H: (F(r"^qos trust\s+", "qos trust { dot1p | dscp }",
+                "Comware V5 的命令写作 priority-trust cos / dscp，与 V7 不同。"),
+              F(r"^undo qos trust$", "undo qos trust")),
+          W: (F(r"^trust\s+", "trust { 8021p { inner | outer } | dscp }",
+                "华为的命令就是 trust，没有 qos 前缀，缺省信任 8021p outer。"),
+              F(r"^undo trust$", "undo trust")),
+          C: (F(r"^mls qos$", "mls qos", "QoS 总开关，没开后面都不生效。"),
+              F(r"^mls qos trust\s+", "mls qos trust { dscp | cos }",
+                "部分 Catalyst 平台的命令写作 qos trust。"),
+              F(r"^no mls qos trust$", "no mls qos trust")),
+          R: (F(r"^mls qos$", "mls qos"),
+              F(r"^mls qos trust\s+", "mls qos trust { dscp | cos }",
+                "部分 RGOS 版本的命令写作 qos trust。"),
+              F(r"^no mls qos trust$", "no mls qos trust")),
+      }),
+
+    D("QoS 标记（MQC 流策略）", "运维",
+      "用「流分类 → 流行为 → 流策略」三步把匹配到的流量重新打上 DSCP 标记。"
+      "H3C / 华为和思科 / 锐捷在这一块的命令体系完全不同。",
+      params=(("流分类", "挑出要处理的流量，这里按 ACL 编号匹配。"),
+              ("流行为", "对挑出来的流量做什么，这里是重标记 DSCP。"),
+              ("流策略", "把分类和行为绑在一起，再应用到端口上。")),
+      caution="入方向应用在接终端的口上——标记要在入口做，"
+              "出了设备再标就没意义了。",
+      forms={
+          H: (F(r"^traffic classifier\s+", "traffic classifier <名称> operator { and | or }"),
+              F(r"^if-match\s+", "if-match acl <ACL编号>"),
+              F(r"^traffic behavior\s+", "traffic behavior <名称>"),
+              F(r"^remark dscp\s+", "remark dscp <值>"),
+              F(r"^qos policy\s+", "qos policy <名称>"),
+              F(r"^classifier\s+\S+\s+behavior\s+", "classifier <分类名> behavior <行为名>"),
+              F(r"^qos apply policy\s+", "qos apply policy <策略名> { inbound | outbound }")),
+          W: (F(r"^traffic classifier\s+", "traffic classifier <名称> operator { and | or }"),
+              F(r"^if-match\s+", "if-match acl <ACL编号>"),
+              F(r"^traffic behavior\s+", "traffic behavior <名称>"),
+              F(r"^remark dscp\s+", "remark dscp <值>"),
+              F(r"^traffic policy\s+", "traffic policy <名称>",
+                "华为把「流策略」叫 traffic policy。"),
+              F(r"^classifier\s+\S+\s+behavior\s+", "classifier <分类名> behavior <行为名>"),
+              F(r"^traffic-policy\s+", "traffic-policy <策略名> { inbound | outbound }")),
+          C: (F(r"^class-map\s+", "class-map { match-all | match-any } <名称>"),
+              F(r"^match access-group\s+", "match access-group <ACL编号>"),
+              F(r"^policy-map\s+", "policy-map <名称>"),
+              F(r"^set dscp\s+", "set dscp <值>"),
+              F(r"^service-policy\s+", "service-policy { input | output } <策略名>")),
+          R: (F(r"^class-map\s+", "class-map { match-all | match-any } <名称>"),
+              F(r"^match access-group\s+", "match access-group <ACL编号>"),
+              F(r"^policy-map\s+", "policy-map <名称>"),
+              F(r"^set dscp\s+", "set dscp <值>"),
+              F(r"^service-policy\s+", "service-policy { input | output } <策略名>")),
+      }),
+
+    D("查看 QoS 生效情况", "运维",
+      "确认信任模式生效了、策略有命中计数。"
+      "命中计数长期为 0，说明流量根本没匹配上，策略等于没配。",
+      forms={
+          H: (F(r"^display qos trust", "display qos trust interface"),
+              F(r"^display qos policy", "display qos policy interface")),
+          W: (F(r"^display trust", "display trust"),
+              F(r"^display traffic policy\s+", "display traffic policy statistics interface")),
+          C: (F(r"^show mls qos\s+", "show mls qos interface"),
+              F(r"^show policy-map\s+", "show policy-map interface")),
+          R: (F(r"^show mls qos\s+", "show mls qos interface"),
+              F(r"^show policy-map\s+", "show policy-map interface")),
       }),
 )
 

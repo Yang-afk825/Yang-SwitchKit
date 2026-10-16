@@ -1183,6 +1183,171 @@ def _mplsvpn(p, scenario) -> GenResult:
     return b.done()
 
 
+# --------------------------------------------------------------------------
+# 第四批：接入认证 / 供电 / QoS / IPv6
+# --------------------------------------------------------------------------
+
+def _dot1x(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    ip = B.ensure(p.get("radius_ip"), "RADIUS 服务器地址")
+    key = B.ensure(p.get("radius_key"), "RADIUS 共享密钥")
+    domain = B.ensure(p.get("domain"), "认证域名称")
+    port_list = ports.expand(p.get("ports", ""), VENDOR.key)
+    if not port_list:
+        raise ValueError("请填写受控端口。")
+
+    b.block("配置 RADIUS 服务器模板", [
+        _ENTER, "radius-server template SCG-RADIUS",
+        f" radius-server authentication {ip} 1812",
+        f" radius-server accounting {ip} 1813",
+        f" radius-server shared-key cipher {key}",
+        " quit",
+    ], comment="华为要先建 RADIUS 服务器模板，再让认证域去引用它。")
+    b.warn("共享密钥在脚本里是明文，交付后请改成密文保存或立即更换。")
+
+    b.block("配置认证方案与认证域", [
+        _ENTER, "aaa",
+        " authentication-scheme SCG-AUTH",
+        "  authentication-mode radius", "  quit",
+        f" domain {domain}",
+        "  authentication-scheme SCG-AUTH",
+        "  radius-server SCG-RADIUS",
+        "  quit",
+        " quit",
+    ], comment="认证方案决定用哪种方式认证，认证域把方案和 RADIUS 模板绑在一起。"
+               "终端上填的账号要带上 @域名 后缀，或者把该域设为默认域。")
+
+    body = ["dot1x enable",
+            f"dot1x port-method {p.get('port_method', 'macbased')}",
+            f"dot1x port-control {p.get('port_control', 'auto')}"]
+    if p.get("guest_vlan"):
+        body.append(f"dot1x guest-vlan {p['guest_vlan']}")
+    if p.get("max_user"):
+        body.append(f"dot1x max-user {p['max_user']}")
+    b.block("端口开启 802.1X", [_ENTER] + _if_blocks(port_list, body),
+            comment="华为是接口下 dot1x enable，没有全局开关。")
+
+    b.block("保存配置", _SAVE)
+    b.block("核对认证状态",
+            [_ENTER, "display dot1x", "display access-user"],
+            comment="先看端口有没有在跑 802.1X，再看在线用户列表。")
+    if B.truthy(p.get("mac_bypass")):
+        b.note("华为的 MAC 旁路认证要在认证模板里配，命令随版本差异较大，"
+               "本工具没有生成，请用 ? 确认后手工补配。")
+    b.warn("华为从 V600 版本起改用 NAC 认证模板模型（authentication-profile），"
+           "接口下不再写 dot1x enable，而是绑认证模板。"
+           "本工具生成的是 V200 的写法，下发前请先用 ? 确认本机属于哪套模型。")
+    return b.done()
+
+
+def _poe(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    port_list = ports.expand(p.get("ports", ""), VENDOR.key)
+    if not port_list:
+        raise ValueError("请填写供电端口。")
+    action = p.get("action", "enable")
+
+    body: list[str] = []
+    if action == "disable":
+        body.append("undo poe enable")
+    else:
+        body.append("poe enable")
+        body.append(f"poe priority {p.get('priority', 'high')}")
+
+    b.block("配置 PoE 供电", [_ENTER] + _if_blocks(port_list, body),
+            comment="poe priority 决定整机供电不足时的取舍顺序："
+                    "critical 最后断电，low 最先断电。")
+    b.block("核对供电状态",
+            [_ENTER, "display poe power", "display poe interface"],
+            comment="确认端口在供电、功率是多少、有没有超预算。")
+    b.block("保存配置", _SAVE)
+    if p.get("max_power"):
+        b.note(f"单口功率上限填了 {p['max_power']} 但本工具没有生成——"
+               f"华为的限制命令随型号差异较大（poe power / poe power-limit），"
+               f"请用 ? 确认本机写法后手工补配。")
+    if action == "disable":
+        b.warn("关闭 PoE 会让 AP、摄像头这类设备直接断电，确认不是生产设备再执行。")
+    return b.done()
+
+
+def _qos_priority(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    port_list = ports.expand(p.get("ports", ""), VENDOR.key)
+    if not port_list:
+        raise ValueError("请填写生效端口。")
+    trust = p.get("trust", "dscp")
+
+    if trust == "none":
+        b.block("不信任报文优先级",
+                [_ENTER] + _if_blocks(port_list, ["undo trust"]),
+                comment="取消信任后设备改用端口优先级给所有流量兜底。")
+    else:
+        keyword = "8021p outer" if trust == "dot1p" else "dscp"
+        b.block("配置优先级信任模式",
+                [_ENTER] + _if_blocks(port_list, [f"trust {keyword}"]),
+                comment="华为的命令就是 trust，没有 qos 前缀，这点与 H3C / 思科都不同。"
+                        "8021p 还分 inner / outer，一般信外层，缺省就是 8021p outer。")
+
+    if p.get("acl_id"):
+        acl = B.ensure(p.get("acl_id"), "ACL 编号")
+        dscp = B.ensure(p.get("dscp") or "af11", "DSCP 值")
+        direction = p.get("direction", "inbound")
+        b.block("定义流分类与流行为", [
+            _ENTER,
+            "traffic classifier SCG-CLS operator and",
+            f" if-match acl {acl}", " quit",
+            "traffic behavior SCG-BEH",
+            f" remark dscp {dscp}", " quit",
+            "traffic policy SCG-POL",
+            " classifier SCG-CLS behavior SCG-BEH", " quit",
+        ], comment="华为把「流策略」叫 traffic policy，绑定用 classifier ... behavior ...，"
+                   f"这里把匹配 ACL {acl} 的流量重标记成 DSCP {dscp}。")
+        b.block("把策略应用到端口",
+                [_ENTER] + _if_blocks(port_list, [f"traffic-policy SCG-POL {direction}"]),
+                comment="入方向应用在接终端的口上，标记要在入口做。")
+        b.note(f"ACL {acl} 需要你先建好，可以用「ACL 访问控制」那条场景生成。")
+
+    b.block("保存配置", _SAVE)
+    b.block("核对结果",
+            [_ENTER, "display trust", "display traffic policy statistics interface"],
+            comment="确认信任模式生效、策略有命中计数。")
+    b.note("不做标记的网络里，所有报文的优先级其实都一样。")
+    return b.done()
+
+
+def _ipv6(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    vlan = B.ensure(p.get("svlan"), "三层接口 VLAN")
+    addr = B.ensure(p.get("address"), "IPv6 地址")
+    prefix = str(p.get("prefix") or "64")
+    iface = B.l3_iface(VENDOR.key, vlan)
+    routes = B.parse_routes6(p.get("routes", ""))
+
+    lines = [_ENTER, f"interface {iface}", " ipv6 enable",
+             f" ipv6 address {addr} {prefix}"]
+    if B.truthy(p.get("nd_ra")):
+        lines.append(" undo ipv6 nd ra halt")
+    lines.append(" quit")
+    b.block("配置 IPv6 接口地址", lines,
+            comment="华为要先 ipv6 enable 打开接口的 IPv6 能力，再配地址。"
+                    "接终端的接口要 undo ipv6 nd ra halt 才会发路由通告。")
+
+    if routes:
+        lines = [_ENTER]
+        for dest, nexthop in routes:
+            net, _, plen = dest.partition("/")
+            lines.append(f"ipv6 route-static {net} {plen} {nexthop}")
+        b.block("配置 IPv6 静态路由", lines)
+
+    b.block("保存配置", _SAVE)
+    b.block("核对结果", [
+        _ENTER, "display ipv6 interface brief", "display ipv6 routing-table",
+        "display ipv6 neighbors",
+    ], comment="看接口地址、路由表和邻居表三项。")
+    b.note("IPv6 接口会自动生成 fe80:: 开头的链路本地地址，不要禁用。")
+    return b.done()
+
+
 _HANDLERS = {
     "vlan_port": _vlan_port,
     "lag": _lag,
@@ -1209,6 +1374,10 @@ _HANDLERS = {
     "isis": _isis,
     "bgp": _bgp,
     "mplsvpn": _mplsvpn,
+    "dot1x": _dot1x,
+    "poe": _poe,
+    "qos_priority": _qos_priority,
+    "ipv6": _ipv6,
 }
 
 

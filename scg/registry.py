@@ -744,6 +744,135 @@ SCENARIOS: tuple[Scenario, ...] = (
             "两台 PE 上的 VPN 实例名可以不同，但 RD、RT、VPN 路由的下一跳必须理清。",
         ),
     ),
+
+    # ==================================================================
+    # 第四批：接入认证、供电、QoS 与 IPv6
+    # ==================================================================
+
+    Scenario(
+        key="dot1x",
+        name="802.1X 认证",
+        group="安全",
+        summary="给端口上一把锁：终端不先通过 RADIUS 认证，交换机就不放行数据流量。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("radius_ip", "RADIUS 服务器地址", Kind.TEXT, "192.168.1.30",
+                  example="192.168.1.30"),
+            Param("radius_key", "RADIUS 共享密钥", Kind.TEXT, "Radius@123",
+                  help="交换机与服务器两边必须完全一致，不一致认证永远失败。"),
+            Param("domain", "认证域名称", Kind.TEXT, "scg.local",
+                  help="H3C / 华为用它把接入用户引到指定的 RADIUS 方案；"
+                       "思科 / 锐捷不需要，会自动忽略。",
+                  example="scg.local"),
+            Param("ports", "受控端口", Kind.TEXT, "1/0/1-8", help=PORT_HINT,
+                  example="1/0/1-8", span=2),
+            Param("port_method", "接入控制方式", Kind.CHOICE, "macbased",
+                  choices=(("macbased", "基于 MAC（推荐，一个端口可接多台）"),
+                           ("portbased", "基于端口（首个用户认证通过后整口放行）"))),
+            Param("port_control", "端口授权状态", Kind.CHOICE, "auto",
+                  choices=(("auto", "auto（认证通过才放行）"),
+                           ("authorized-force", "强制授权（放行，不认证）"),
+                           ("unauthorized-force", "强制不授权（全部拦掉）"))),
+            Param("guest_vlan", "Guest VLAN", Kind.TEXT, "",
+                  help="选填。未认证终端被放进这个 VLAN，可以只让它访问认证页面。",
+                  example="100"),
+            Param("max_user", "单端口最大用户数", Kind.TEXT, "",
+                  help="选填。填了就限制一个端口下能同时认证多少用户。", example="5"),
+            Param("mac_bypass", "开启 MAC 旁路认证", Kind.BOOL, "0",
+                  help="不支持 802.1X 的哑终端（打印机、摄像头）靠 MAC 地址放行。"),
+        ),
+        notes=(
+            "选基于 MAC 还是基于端口，取决于一个端口下接几台设备：接一台用 portbased，"
+            "接 HUB 或多台用 macbased。",
+            "端口先要能被 RADIUS 服务器访问到，认证报文走的是交换机的管理地址。",
+            "802.1X 和端口安全不能同时开，H3C 上开端口安全会重置 802.1X 配置。",
+        ),
+    ),
+
+    Scenario(
+        key="poe",
+        name="PoE 供电",
+        group="运维",
+        summary="给 AP、摄像头、IP 电话这些设备远程供电，顺带控制优先级和单口功率上限。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("ports", "供电端口", Kind.TEXT, "1/0/1-8",
+                  help="只有支持 PoE 的端口才能配。" + PORT_HINT,
+                  example="1/0/1-8", span=2),
+            Param("action", "操作", Kind.CHOICE, "enable",
+                  choices=(("enable", "开启供电"), ("disable", "关闭供电"))),
+            Param("priority", "供电优先级", Kind.CHOICE, "high",
+                  choices=(("critical", "critical（供电不足时最后被断电）"),
+                           ("high", "high（推荐）"),
+                           ("low", "low（供电不足时最先被断电）"))),
+            Param("max_power", "单口最大功率", Kind.TEXT, "",
+                  help="选填，单位毫瓦。留空用设备默认值。", example="30000"),
+        ),
+        notes=(
+            "整机 PoE 功率是有限的，优先级决定供电不足时先牺牲哪些端口。"
+            "关键设备（AP、摄像头）给 high 或 critical。",
+            "端口被 shutdown 时 PoE 也会断电，排查供电问题先看端口状态。",
+            "万兆口、光口一般不支持 PoE，配之前先确认端口类型。",
+        ),
+    ),
+
+    Scenario(
+        key="qos_priority",
+        name="QoS 优先级信任与重标记",
+        group="运维",
+        summary="告诉交换机该相信报文里的哪个优先级字段，必要时按 ACL 重新标记 DSCP。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("ports", "生效端口", Kind.TEXT, "1/0/1-24", help=PORT_HINT,
+                  example="1/0/1-24", span=2),
+            Param("trust", "信任模式", Kind.CHOICE, "dscp",
+                  choices=(("dscp", "信任 DSCP（三层标记）"),
+                           ("dot1p", "信任 802.1p（二层标记，带 VLAN Tag）"),
+                           ("none", "不信任报文的优先级")),
+                  help="接 AP、服务器、上行口建议信任 DSCP；接哑终端的老设备可以信 802.1p。"),
+            Param("acl_id", "重标记匹配的 ACL", Kind.TEXT, "",
+                  help="选填。填了才生成 DSCP 重标记策略，ACL 需要你先建好。",
+                  example="3000"),
+            Param("dscp", "重标记成 DSCP", Kind.TEXT, "af11",
+                  help="仅填了 ACL 时生效。可写名称如 ef / af11，也可写数字 0-63。",
+                  example="af11"),
+            Param("direction", "应用方向", Kind.CHOICE, "inbound",
+                  choices=(("inbound", "入方向"), ("outbound", "出方向"))),
+        ),
+        notes=(
+            "优先级信任要配在接入侧的端口上，且要在策略应用之前配好，"
+            "否则后面的分类拿不到有效输入。",
+            "默认设备是不信任报文优先级的，会用端口优先级给所有流量兜底，"
+            "所以不做标记的网络里大家的优先级其实都一样。",
+            "语音、视频这类业务建议在接入层就打 DSCP 标记，后面全程信任，"
+            "比在核心层再分类省事得多。",
+        ),
+    ),
+
+    Scenario(
+        key="ipv6",
+        name="IPv6 基础",
+        group="三层",
+        summary="给三层接口配上 IPv6 地址、打开路由转发，并配静态路由。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("svlan", "三层接口 VLAN", Kind.NUM, "10"),
+            Param("address", "IPv6 地址", Kind.TEXT, "2001:db8:10::1",
+                  help="不要写 //64 之外的掩码长度，统一用 /64。", example="2001:db8:10::1"),
+            Param("prefix", "前缀长度", Kind.NUM, "64"),
+            Param("nd_ra", "发送 RA 通告", Kind.BOOL, "1",
+                  help="终端靠路由通告（RA）自动生成地址，接终端的接口要开。"),
+            Param("routes", "静态路由", Kind.AREA, "",
+                  help="选填。每行一条：目标前缀/长度 下一跳。",
+                  example="2001:db8:20::/64 2001:db8:10::2", span=2),
+        ),
+        notes=(
+            "IPv6 接口会自动生成一个链路本地地址（fe80:: 开头），"
+            "这是邻居发现协议用的，不要禁用。",
+            "思科 / 锐捷必须先在全局打开 ipv6 unicast-routing，否则接口配了地址也转发不了。",
+            "IPv6 没有广播，都靠组播；ARP 的活由邻居发现（ND）接管。",
+        ),
+    ),
 )
 
 BY_KEY: dict[str, Scenario] = {s.key: s for s in SCENARIOS}
