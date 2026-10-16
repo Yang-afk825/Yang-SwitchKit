@@ -3,15 +3,15 @@
 > 这份文档回答三个问题：**每个模块负责什么**、**模块之间怎么联动**、
 > **为什么这么设计**。想看怎么用请回到 [README](../README.md)。
 
-- 代码规模：约 **9600 行**（含注释与文档字符串）
-- 覆盖：**4 厂商 × 22 场景 = 88 组**命令模板，**132 条**命令概念详解
+- 代码规模：约 **11000 行**（含注释与文档字符串）
+- 覆盖：**4 厂商 × 25 场景 = 100 组**命令模板，**156 条**命令概念详解
 - 运行形态：纯离线的 Windows 桌面程序，Python 3.12 + Tkinter，打包后 11 MB 单文件
 
 ---
 
 ## 一、一句话定位
 
-把「配一台交换机」拆成 22 个常见场景，用户选厂商、填参数，
+把「配一台交换机」拆成 25 个常见场景，用户选厂商、填参数，
 程序产出**可以直接粘贴到设备的配置命令**，并给出**逐条命令详解**与**四厂商命令对照**。
 
 关键词是「**离线**」和「**正确**」：
@@ -112,16 +112,16 @@ Yang-SwitchKit/
 │   ├── __init__.py           4 行   版本号
 │   ├── model.py            137 行   数据模型：参数/场景/厂商/结果块
 │   ├── ports.py            182 行   端口写法解析与展开
-│   ├── registry.py         624 行   22 个场景的参数定义（唯一的「配置表」）
-│   ├── explain.py         1847 行   132 条命令概念的详解知识库
+│   ├── registry.py         754 行   25 个场景的参数定义（唯一的「配置表」）
+│   ├── explain.py         2207 行   156 条命令概念的详解知识库
 │   ├── verify.py           157 行   正确性核验记录（纯数据）
 │   ├── vendors/
 │   │   ├── __init__.py      46 行   厂商聚合与分发
-│   │   ├── base.py         415 行   结果构建器 + 各厂商共用的解析工具
-│   │   ├── h3c.py         1106 行   H3C Comware V5/V7
-│   │   ├── huawei.py      1039 行   华为 VRP V5/V8
-│   │   ├── cisco.py       1061 行   思科 IOS 12.x/15.x
-│   │   └── ruijie.py      1031 行   锐捷 RGOS 10.x/11.x
+│   │   ├── base.py         497 行   结果构建器 + 各厂商共用的解析工具
+│   │   ├── h3c.py         1293 行   H3C Comware V5/V7
+│   │   ├── huawei.py      1222 行   华为 VRP V5/V8
+│   │   ├── cisco.py       1273 行   思科 IOS 12.x/15.x
+│   │   └── ruijie.py      1242 行   锐捷 RGOS 10.x/11.x
 │   └── ui/
 │       ├── __init__.py       4 行
 │       ├── window.py      1087 行   主窗口：布局、交互、渲染
@@ -188,9 +188,9 @@ vlan 10
 
 ---
 
-### 4.3 `scg/registry.py` —— 场景注册表（624 行）
+### 4.3 `scg/registry.py` —— 场景注册表（754 行）
 
-**这是全项目唯一的「配置表」**：22 个 `Scenario(...)` 对象，每个声明自己的参数。
+**这是全项目唯一的「配置表」**：25 个 `Scenario(...)` 对象，每个声明自己的参数。
 
 ```python
 Scenario(
@@ -292,9 +292,9 @@ return b.done()                                  # 拿到 GenResult
 
 ---
 
-### 4.6 `scg/vendors/{h3c,huawei,cisco,ruijie}.py` —— 四厂商命令库（约 4200 行）
+### 4.6 `scg/vendors/{h3c,huawei,cisco,ruijie}.py` —— 四厂商命令库（约 5000 行）
 
-四个文件结构完全对称，每个约 1000 行：
+四个文件结构完全对称，每个约 1250 行：
 
 ```python
 VENDOR = Vendor(key="h3c", name="H3C 新华三", platform="Comware V5 / V7",
@@ -305,7 +305,7 @@ _SAVE  = ("return", "save force")  # 保存并退出
 
 def _if_blocks(port_list, body): ...   # 接口块；连续端口合并成 interface range
 
-def _vlan_port(p, scenario): ...   # 22 个场景各一个函数
+def _vlan_port(p, scenario): ...   # 25 个场景各一个函数
 def _lag(p, scenario): ...
 ...
 _HANDLERS = {"vlan_port": _vlan_port, "lag": _lag, ...}   # 场景 key → 处理函数
@@ -351,7 +351,7 @@ def _port_security(p, scenario):
 
 ---
 
-### 4.7 `scg/explain.py` —— 命令详解知识库（1847 行）
+### 4.7 `scg/explain.py` —— 命令详解知识库（2207 行）
 
 **全项目最大的单文件**，也是最核心的设计。它解决一个矛盾：
 
@@ -409,7 +409,7 @@ for vk, items in _COMPILED.items():
 | 函数 | 产出 | 用在哪 |
 |---|---|---|
 | `render_explanation(厂商, result)` | 针对**本次生成的命令**逐条详解，按首次出现去重 | 详解页「本次生成的命令详解」 |
-| `render_manual(厂商)` | 该厂商全部 132 条概念，按分组排列 | 详解页「该厂商命令手册」 |
+| `render_manual(厂商)` | 该厂商全部 156 条概念，按分组排列 | 详解页「该厂商命令手册」 |
 | `render_compare()` | 只列两家以上都有的概念，四家写法对照 | 详解页「四厂商命令对照」 |
 | `coverage(厂商, result)` | `(已覆盖行数, 总行数, 未识别行列表)` | 状态栏 + 自检 |
 
@@ -548,7 +548,7 @@ def px(value) -> int:              # 96 DPI 设计值 → 当前屏幕像素
 
 | 脚本 | 怎么用 | 保证什么 |
 |---|---|---|
-| `smoke_test.py` | `python tools/smoke_test.py` | 4 × 22 = 88 组全用默认参数生成一遍，任何异常即失败 |
+| `smoke_test.py` | `python tools/smoke_test.py` | 4 × 25 = 100 组全用默认参数生成一遍，任何异常即失败 |
 | `verify_exe.py` | `python tools/verify_exe.py <exe>` | 打包产物能起来、窗口标题对、尺寸合理、**不留孤儿进程** |
 | `wincap.py` | 被其它脚本 import | 用 `PrintWindow` 只抓窗口自身画面 |
 | `shot.py` | 开发自检 | 截 4 张图看视觉效果 |
@@ -685,9 +685,9 @@ hit, total, miss = explain.coverage(vendor_key, result)
 自检脚本对 4 厂商全场景跑一遍，要求 **100%**：
 
 ```
-h3c    366/366      huawei 335/335
-cisco  329/329      ruijie 336/336
-合计   1366/1366 = 100.00%
+h3c    454/454      huawei 423/423
+cisco  424/424      ruijie 433/433
+合计   1734/1734 = 100.00%
 ```
 
 **这个数字是个安全网**：加新场景时如果忘了在 `explain.py` 补详解，
@@ -712,7 +712,7 @@ cisco  329/329      ruijie 336/336
      └─ _refresh_doc()
 ```
 
-**设计要点：参数表不随厂商变**。22 个场景的参数定义在 `registry.py` 里只有一份，
+**设计要点：参数表不随厂商变**。25 个场景的参数定义在 `registry.py` 里只有一份，
 四家共用 —— 因为「VLAN 号」「端口」「聚合组号」这些概念是跨厂商的，
 变的只有**命令怎么写**。所以换厂商只需要重算命令，不用重建表单。
 
@@ -760,7 +760,7 @@ def _toggle_theme(self):
 改完跑一遍：
 
 ```bash
-python tools/smoke_test.py      # 组合数会从 88 变成 92，应全部通过
+python tools/smoke_test.py      # 组合数会从 100 变成 104，应全部通过
 ```
 
 再看覆盖率是不是还是 100%。这两条过了就算接好了。
@@ -815,8 +815,10 @@ from . import cisco, h3c, huawei, ruijie
 3. **堆叠 / IRF / VSU 差异最大** —— 给的是骨架，必须对照本机型号手册。
 4. **思科没有环路检测** —— 工具给的是 PortFast + BPDU 保护 + errdisable 的替代方案。
 5. **静态 IP+MAC 绑定不生成** —— 四家参数模型都不一样，风险大于收益，只给命令模板注释。
-6. **明文密码** —— 生成结果里的密码是明文，仅用于开局，交付前必须统一更换。
-7. **不连设备、不下发** —— 只产出文本，最终执行由人决定。
+6. **MPLS L3VPN 是路由器级特性** —— 四家都只有高端型号支持（思科 Catalyst 9000 以上带 MPLS 特性的版本、华为 S12700/NE 系列、H3C S12500、锐捷 N18K/S65 以上），普通接入交换机没有这个能力，配置前先确认型号与 license。生成的是 **PE 侧**配置，P 设备只需要中间的 MPLS + LDP 部分。
+7. **锐捷的 MPLS 命令与其他三家差异最大** —— 没有 `mpls lsr-id`，改用 `mpls router ldp` → `ldp router-id interface <接口> force`；接口下的标签交换命令在不同版本里写作 `label-switch` 或 `label-switching`，工具按官方文档生成前者。
+8. **明文密码** —— 生成结果里的密码是明文，仅用于开局，交付前必须统一更换。
+9. **不连设备、不下发** —— 只产出文本，最终执行由人决定。
 
 ---
 
@@ -843,4 +845,4 @@ python build.py
 2. **拆参数要用 `base.split_ifaces()`，不能用空白拆** ——
    `Vlan-interface 10`、`GigabitEthernet 0/0/1` 这类接口名自带空格，用空白拆会劈成两半。
 
-改完代码记得跑 `tools/smoke_test.py`，它会告诉你 88 组里有没有哪组挂了。
+改完代码记得跑 `tools/smoke_test.py`，它会告诉你 100 组里有没有哪组挂了。

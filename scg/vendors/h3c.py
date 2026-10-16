@@ -1070,6 +1070,190 @@ def _syslog(p, scenario) -> GenResult:
     return b.done()
 
 
+# --------------------------------------------------------------------------
+# 第三批：动态路由与 MPLS VPN
+# --------------------------------------------------------------------------
+
+def _isis(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    process = B.ensure(p.get("process") or "1", "进程号")
+    net = B.ensure(p.get("net"), "NET 地址")
+    level = p.get("level", "level-2")
+
+    lines = [_ENTER, f"isis {process}", f" is-level {level}",
+             f" cost-style {p.get('cost_style', 'wide')}",
+             f" network-entity {net}", " quit"]
+    b.block("启用 IS-IS 并配置 NET", lines,
+            comment="官方建议 cost-style、is-level、network-entity 三条一起改时"
+                    "把 network-entity 放最后，避免配置顺序不对导致 IS-IS 进程重启。")
+
+    ifaces = _l3_ifaces(p, VENDOR.key)
+    if ifaces:
+        body = [f"isis enable {process}"]
+        if p.get("circuit_level", "follow") != "follow":
+            body.append(f"isis circuit-level {p['circuit_level']}")
+        if B.truthy(p.get("auth")):
+            key = B.ensure(p.get("auth_key"), "验证密钥")
+            body.append(f"isis authentication-mode md5 plain {key}")
+        b.block("接口使能 IS-IS", [_ENTER] + _if_blocks(ifaces, body),
+                comment="只能建单层邻接时用 isis circuit-level 限制，能少收一半的 PDU。")
+    else:
+        b.warn("没有填三层接口，IS-IS 起来了也建不了邻接。")
+
+    if B.truthy(p.get("import_direct")):
+        b.block("引入直连路由", [
+            _ENTER, f"isis {process}", " address-family ipv4",
+            "  import-route direct", "  quit", " quit",
+        ], comment="import-route 必须敲在 address-family ipv4 视图里，"
+                   "在 isis 主视图敲会报 Unrecognized command。")
+
+    b.block("保存配置", _SAVE)
+    b.block("核对邻居与路由",
+            [_ENTER, "display isis peer", "display isis route", "display isis lsdb"],
+            comment="先看邻接是不是 Up，再看路由表里有没有学到对端网段。")
+    b.note("同一台设备只能有一个 IS-IS 实例运行在 Level-2（含 Level-1-2）。")
+    return b.done()
+
+
+def _l3_ifaces(p, vendor_key) -> list[str]:
+    """把「三层接口 VLAN」和「三层物理口」两个参数合成接口名列表。"""
+    out: list[str] = []
+    for v in B.split_ifaces(p.get("svlan")):
+        out.append(B.l3_iface(vendor_key, v))
+    out.extend(B.resolve_ifaces(p.get("ports"), vendor_key))
+    return out
+
+
+def _bgp(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    local_as = B.ensure(p.get("local_as") or "65001", "本机 AS 号")
+    router_id = B.ensure(p.get("router_id"), "Router ID")
+    peers = B.parse_peers(p.get("peers", ""))
+    if not peers:
+        raise ValueError("请至少填写一个 BGP 邻居。")
+    nets = B.parse_networks(p.get("networks", ""))
+
+    lines = [_ENTER, f"bgp {local_as}", f" router-id {router_id}"]
+    for peer in peers:
+        lines.append(f" peer {peer.ip} as-number {peer.asn}")
+        if peer.desc:
+            lines.append(f" peer {peer.ip} description {peer.desc}")
+    if B.truthy(p.get("md5")):
+        key = B.ensure(p.get("md5_key"), "MD5 密钥")
+        for peer in peers:
+            lines.append(f" peer {peer.ip} password simple {key}")
+    ka = str(p.get("keepalive") or "").split()
+    if len(ka) == 2 and all(x.isdigit() for x in ka):
+        for peer in peers:
+            lines.append(f" peer {peer.ip} timer keepalive {ka[0]} hold {ka[1]}")
+
+    lines += [" address-family ipv4 unicast"]
+    for peer in peers:
+        lines.append(f"  peer {peer.ip} enable")
+    for net, plen in nets:
+        lines.append(f"  network {net} {B.prefix_to_dotted(plen)}")
+    if B.truthy(p.get("import_direct")):
+        lines.append("  import-route direct")
+    lines += ["  quit", " quit"]
+    b.block("配置 BGP 与邻居", lines,
+            comment="Comware V7 必须在 address-family ipv4 unicast 里再 peer enable 一次，"
+                    "只创建邻居不激活，会话建不起来。")
+
+    b.block("保存配置", _SAVE)
+    b.block("核对邻居与路由",
+            [_ENTER, "display bgp peer ipv4", "display bgp routing-table ipv4"],
+            comment="State 要是 Established，路由表里要有你要的网段。")
+    if B.truthy(p.get("md5")):
+        b.warn("TCP MD5 密钥在脚本里是明文，两端必须一致，不一致会一直卡在 Connect。")
+    b.note("IBGP 邻居建议用 Loopback 建，并配 peer <地址> connect-interface Loopback0。")
+    return b.done()
+
+
+def _mplsvpn(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    lsr = B.ensure(p.get("lsr_id"), "LSR ID")
+    as_num = B.ensure(p.get("as_number") or "100", "本域 AS 号")
+    pe_peer = B.ensure(p.get("pe_peer"), "对端 PE 的 Loopback")
+    core_vlan = B.ensure(p.get("core_svlan"), "公网侧 VLAN")
+    core_ip = B.ensure(p.get("core_ip"), "公网侧本机地址")
+    core_mask = str(p.get("core_mask") or "30")
+    vrf = B.ensure(p.get("vrf_name"), "VPN 实例名")
+    rd = B.ensure(p.get("rd"), "RD")
+    rt_in = B.ensure(p.get("rt_import"), "RT 导入值")
+    rt_out = B.ensure(p.get("rt_export"), "RT 导出值")
+    ce_vlan = B.ensure(p.get("ce_svlan"), "接 CE 的 VLAN")
+    ce_ip = B.ensure(p.get("ce_ip"), "CE 侧本机地址")
+    ce_mask = str(p.get("ce_mask") or "24")
+    ce_as = B.ensure(p.get("ce_as") or "65410", "CE 的 AS 号")
+    ce_peer = B.ensure(p.get("ce_peer_ip"), "CE 的接口地址")
+
+    loop = B.loopback_iface(VENDOR.key, 0)
+    core_if = B.l3_iface(VENDOR.key, core_vlan)
+    ce_if = B.l3_iface(VENDOR.key, ce_vlan)
+
+    b.block("先建好 Loopback", [
+        _ENTER, f"interface {loop}", f" ip address {lsr} 32", " quit",
+    ], comment="LSR ID 用 Loopback 地址最稳，只要它不 down，LDP 会话就不会断。")
+
+    b.block("开启 MPLS 与 LDP", [
+        _ENTER, f"mpls lsr-id {lsr}", "mpls ldp",
+        f"interface {core_if}", f" ip address {core_ip} {core_mask}",
+        " mpls enable", " mpls ldp enable", " quit",
+    ], comment="公网侧接口要同时开 mpls enable 和 mpls ldp enable，"
+               "少一条标签就发不出去。接 CE 的接口不要开 MPLS。")
+
+    b.block("创建 VPN 实例", [
+        _ENTER, f"ip vpn-instance {vrf}",
+        f" route-distinguisher {rd}",
+        f" vpn-target {rt_in} import-extcommunity",
+        f" vpn-target {rt_out} export-extcommunity",
+        " quit",
+    ], comment="RD 保证不同 VPN 的同网段路由不冲突；"
+               "RT 决定路由在哪些 VPN 之间互通，本机导入值要对上对端的导出值。")
+
+    b.block("把 CE 接口绑定到 VPN 实例", [
+        _ENTER, f"interface {ce_if}",
+        f" ip binding vpn-instance {vrf}",
+        f" ip address {ce_ip} {ce_mask}", " quit",
+    ], comment="注意顺序：ip binding 会清掉接口上原有的 IP 配置，"
+               "所以必须先绑实例再配地址，反了地址就没了。")
+
+    b.block("MP-BGP 传递 VPN 路由", [
+        _ENTER, f"bgp {as_num}",
+        f" peer {pe_peer} as-number {as_num}",
+        f" peer {pe_peer} connect-interface {loop}",
+        " address-family vpnv4",
+        f"  peer {pe_peer} enable",
+        f"  peer {pe_peer} next-hop-local",
+        "  quit",
+        f" ip vpn-instance {vrf}",
+        f"  peer {ce_peer} as-number {ce_as}",
+        "  address-family ipv4 unicast",
+        f"   peer {ce_peer} enable",
+        "   import-route direct",
+        "   quit",
+        "  quit",
+        " quit",
+    ], comment="vpnv4 地址族负责 PE 之间传 VPN 路由；"
+               "ip vpn-instance 下面是 PE 与 CE 之间的私网邻居。"
+               "next-hop-local 让 PE 把下一跳改成本机，避免对端迭代不出隧道。")
+
+    b.block("保存配置", _SAVE)
+    b.block("分段核对", [
+        _ENTER,
+        "display mpls ldp peer",
+        "display mpls ldp lsp",
+        "display ip vpn-instance",
+        "display bgp peer vpnv4",
+        "display bgp vpnv4 vpn-instance " + vrf,
+    ], comment="按顺序查：LDP 邻居通了没、标签有没有下发、VPN 实例建了没、"
+               "MP-BGP 邻居起来没、VPN 路由收没收到。")
+    b.warn("MPLS 的前提是公网侧 IGP 已经跑通，而且两端的 Loopback 都要被宣告进 IGP，"
+           "否则 LDP 会话建不起来。建议先配 OSPF 或 IS-IS 那两条场景。")
+    b.warn("PE 与 CE 之间的接口不要再开 MPLS，也不要绑两个 VPN 实例。")
+    return b.done()
+
+
 _HANDLERS = {
     "vlan_port": _vlan_port,
     "lag": _lag,
@@ -1093,6 +1277,9 @@ _HANDLERS = {
     "inspect": _inspect,
     "backup": _backup,
     "syslog": _syslog,
+    "isis": _isis,
+    "bgp": _bgp,
+    "mplsvpn": _mplsvpn,
 }
 
 

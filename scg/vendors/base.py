@@ -5,6 +5,7 @@ import ipaddress
 import re
 from dataclasses import dataclass
 
+from .. import ports
 from ..model import Block, GenResult
 
 
@@ -396,6 +397,87 @@ def h3c_timezone(zone) -> str:
     hours, mins = divmod(abs(minutes), 60)
     sign = "add" if minutes >= 0 else "minus"
     return f"clock timezone {name} {sign} {hours:02d}:{mins:02d}:00"
+
+
+# --------------------------------------------------------------------------
+# 三层接口与环回口命名（四家都不一样，统一在这里转换）
+# --------------------------------------------------------------------------
+
+def l3_iface(vendor_key: str, vlan_id) -> str:
+    """按厂商拼三层接口名。
+
+    H3C 写 Vlan-interface 10，华为写 Vlanif10，思科写 Vlan10，锐捷写 Vlan 10。
+    """
+    v = str(vlan_id).strip()
+    if vendor_key == "h3c":
+        return f"Vlan-interface {v}"
+    if vendor_key == "huawei":
+        return f"Vlanif{v}"
+    if vendor_key == "ruijie":
+        return f"Vlan {v}"
+    return f"Vlan{v}"
+
+
+def loopback_iface(vendor_key: str, index=0) -> str:
+    """按厂商拼环回接口名。锐捷的接口名与编号之间带空格，华为写 LoopBack。"""
+    n = str(index).strip() or "0"
+    if vendor_key == "huawei":
+        return f"LoopBack{n}"
+    if vendor_key == "ruijie":
+        return f"Loopback {n}"
+    return f"Loopback{n}"
+
+
+def resolve_ifaces(spec, vendor_key: str) -> list[str]:
+    """把接口参数解析成完整接口名列表。
+
+    两种写法都吃：
+      · 端口简写    1/0/1-2、XGE1/0/49      → 按厂商展开
+      · 完整接口名  Vlan-interface 10       → 原样保留（含空格，不能拆）
+    """
+    out: list[str] = []
+    for token in split_ifaces(spec):
+        if re.match(r"^[A-Za-z]", token) and " " in token:
+            out.append(token)               # 已经是完整写法，原样用
+        else:
+            out.extend(ports.expand(token, vendor_key))
+    return out
+
+
+# --------------------------------------------------------------------------
+# BGP
+# --------------------------------------------------------------------------
+
+@dataclass
+class Peer:
+    ip: str
+    asn: str
+    desc: str = ""
+
+
+def parse_peers(text: str) -> list[Peer]:
+    """BGP 邻居列表，每行：``邻居IP 对端AS [描述]``。"""
+    peers: list[Peer] = []
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        toks = line.split()
+        if len(toks) < 2:
+            raise ValueError(f"BGP 邻居需要「IP 对端AS」两段：{line}")
+        peers.append(Peer(toks[0], toks[1], " ".join(toks[2:])))
+    return peers
+
+
+def parse_networks(text: str) -> list[tuple[str, int]]:
+    """要 network 宣告的网段列表，每行 ``192.168.10.0/24``。"""
+    out: list[tuple[str, int]] = []
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        out.append(parse_net(line))
+    return out
 
 
 def id_or_name(acl_id: str) -> str:

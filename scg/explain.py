@@ -1677,6 +1677,366 @@ CATALOG: tuple[Doc, ...] = (
           C: F(r"^show .+\|", "show ... | { include | exclude | begin | section } <关键字>"),
           R: F(r"^show .+\|", "show ... | { include | exclude | begin | section } <关键字>"),
       }),
+
+    # ==================================================================
+    # 第三批：IS-IS
+    # ==================================================================
+
+    D("启用 IS-IS 与 NET", "三层",
+      "打开 IS-IS 进程并配置 NET。NET 由「区域号 + System ID + NSEL」组成，"
+      "System ID 习惯上把 Loopback 地址补全成 12 位来写，便于排障时对号入座。",
+      params=(("NET", "区域号 49.0001 是私有地址段；NSEL 固定写 00。"),
+              ("System ID", "6 字节，通常写成 0000.0000.0001 这种形式。")),
+      caution="同一台设备只能有一个 IS-IS 实例运行在 Level-2（含 Level-1-2）。"
+              "官方建议 cost-style、is-level、network-entity 一起改时把 NET 放最后配。",
+      forms={
+          H: (F(r"^isis\s+\d+$", "isis <进程号>"),
+              F(r"^network-entity\s+", "network-entity <NET>")),
+          W: (F(r"^isis\s+\d+$", "isis <进程号>"),
+              F(r"^network-entity\s+", "network-entity <NET>")),
+          C: (F(r"^router isis$", "router isis [<标签>]"),
+              F(r"^net\s+", "net <NET>")),
+          R: (F(r"^router isis$", "router isis [<标签>]"),
+              F(r"^net\s+", "net <NET>")),
+      }),
+
+    D("IS-IS 设备层级", "三层",
+      "决定这台设备维护哪几张链路状态库：Level-1 只管本区域，"
+      "Level-2 是骨干，Level-1-2 同时维护两张、可以跨区域。",
+      params=(("层级", "纯 IP 网络里全部配 Level-2 最省事，扩展性也最好。"),),
+      forms={
+          H: F(r"^is-level\s+", "is-level { level-1 | level-1-2 | level-2 }",
+               "缺省是 level-1-2。"),
+          W: F(r"^is-level\s+", "is-level { level-1 | level-1-2 | level-2 }"),
+          C: F(r"^is-type\s+", "is-type { level-1 | level-1-2 | level-2-only }",
+               "思科多一个 only：写 level-2-only 而不是 level-2。"),
+          R: F(r"^is-type\s+", "is-type { level-1 | level-1-2 | level-2-only }"),
+      }),
+
+    D("IS-IS 度量风格", "三层",
+      "决定接口开销用哪种编码：narrow 是老标准的 6 位（最大 63），"
+      "wide 是 32 位（最大 16777214），现代网络一律用 wide。",
+      caution="全网必须统一，混用会导致路径计算异常。",
+      forms={
+          H: F(r"^cost-style\s+", "cost-style { narrow | wide | wide-compatible | compatible }"),
+          W: F(r"^cost-style\s+", "cost-style { narrow | wide | wide-compatible | compatible }"),
+          C: F(r"^metric-style\s+", "metric-style { narrow | wide | transition }"),
+          R: F(r"^metric-style\s+", "metric-style { narrow | wide | transition }"),
+      }),
+
+    D("接口使能 IS-IS", "三层",
+      "把接口加入 IS-IS 进程。注意跑 IS-IS 的必须是三层接口，"
+      "交换机上通常是 VLAN 三层接口，或者切成三层的物理口。",
+      caution="思科 / 锐捷的物理口要先 no switchport 才能配 IP 和跑路由。",
+      forms={
+          H: F(r"^isis enable\s+", "isis enable [<进程号>]"),
+          W: F(r"^isis enable\s+", "isis enable [<进程号>]"),
+          C: F(r"^ip router isis", "ip router isis [<标签>]"),
+          R: F(r"^ip router isis", "ip router isis [<标签>]"),
+      }),
+
+    D("IS-IS 接口邻接层级", "三层",
+      "限制这个接口只建立某一层的邻接关系。只跑单层时配上可以少收一半的 PDU。",
+      forms={
+          H: F(r"^isis circuit-level\s+", "isis circuit-level { level-1 | level-1-2 | level-2 }"),
+          W: F(r"^isis circuit-level\s+", "isis circuit-level { level-1 | level-1-2 | level-2 }"),
+          C: F(r"^isis circuit-type\s+", "isis circuit-type { level-1 | level-1-2 | level-2-only }"),
+          R: F(r"^isis circuit-type\s+", "isis circuit-type { level-1 | level-1-2 | level-2-only }"),
+      }),
+
+    D("IS-IS 接口验证", "三层",
+      "对 Hello 报文做验证，防止有人把设备误接进来形成非法邻接。",
+      caution="H3C / 华为直接在接口下写密钥；思科 / 锐捷要先建钥匙串再到接口引用。"
+              "两端密钥必须一致，不一致邻接建不起来。",
+      forms={
+          H: F(r"^isis authentication-mode\s+", "isis authentication-mode md5 { cipher | plain } <密钥>"),
+          W: F(r"^isis authentication-mode\s+", "isis authentication-mode md5 { cipher | plain } <密钥>",
+               "华为还支持 hmac-sha256：isis authentication-mode hmac-sha256 key-id 1 cipher <密钥>。"),
+          C: (F(r"^key chain\s+", "key chain <名称> → key <编号> → key-string <密钥>"),
+              F(r"^isis authentication\s+", "isis authentication mode md5 / isis authentication key-chain <名称>")),
+          R: (F(r"^key chain\s+", "key chain <名称> → key <编号> → key-string <密钥>"),
+              F(r"^isis authentication\s+", "isis authentication mode md5 / isis authentication key-chain <名称>")),
+      }),
+
+    D("查看 IS-IS 邻接", "三层",
+      "看 IS-IS 邻接关系是不是 Up、对端是谁、跑在哪一层。",
+      forms={
+          H: F(r"^display isis", "display isis { peer | route | lsdb }"),
+          W: F(r"^display isis", "display isis { peer | route | lsdb }"),
+          C: F(r"^show isis neighbors$", "show isis neighbors"),
+          R: F(r"^show isis neighbors$", "show isis neighbors"),
+      }),
+
+    # ==================================================================
+    # 第三批：BGP
+    # ==================================================================
+
+    D("启用 BGP 并指定 Router ID", "三层",
+      "打开 BGP 进程（后面的数字就是本机 AS 号），并手工指定 Router ID。",
+      caution="Router ID 冲突会让邻居反复震荡，建议指定成 Loopback 地址，别依赖自动选举。",
+      forms={
+          H: (F(r"^bgp\s+\d+$", "bgp <本机AS号>"),
+              F(r"^router-id\s+", "router-id <IP>")),
+          W: (F(r"^bgp\s+\d+$", "bgp <本机AS号>"),
+              F(r"^router-id\s+", "router-id <IP>")),
+          C: (F(r"^router bgp\s+", "router bgp <本机AS号>"),
+              F(r"^bgp router-id\s+", "bgp router-id <IP>")),
+          R: (F(r"^router bgp\s+", "router bgp <本机AS号>"),
+              F(r"^bgp router-id\s+", "bgp router-id <IP>")),
+      }),
+
+    D("创建 BGP 邻居", "三层",
+      "指定对端地址和对端的 AS 号。对端 AS 与本机相同就是 IBGP，不同就是 EBGP。",
+      params=(("邻居地址", "EBGP 一般是直连口地址；IBGP 建议用 Loopback。"),
+              ("对端 AS", "写错会一直卡在 Connect / Active。")),
+      forms={
+          H: F(r"^peer\s+\S+\s+as-number\s+", "peer <邻居IP> as-number <对端AS>"),
+          W: F(r"^peer\s+\S+\s+as-number\s+", "peer <邻居IP> as-number <对端AS>"),
+          C: F(r"^neighbor\s+\S+\s+remote-as\s+", "neighbor <邻居IP> remote-as <对端AS>"),
+          R: F(r"^neighbor\s+\S+\s+remote-as\s+", "neighbor <邻居IP> remote-as <对端AS>"),
+      }),
+
+    D("在地址族里激活邻居", "三层",
+      "H3C / 华为光创建邻居还不够，必须进对应地址族再 peer enable 一次，"
+      "邻居才会真正交换路由。",
+      caution="这是最常见的「配了却不通」原因之一：邻居显示 Idle 或者根本没起来。",
+      forms={
+          H: (F(r"^address-family ipv4 unicast$", "address-family ipv4 unicast",
+                "进入 IPv4 单播地址族视图。"),
+              F(r"^peer\s+\S+\s+enable$", "peer <邻居IP> enable")),
+          W: (F(r"^ipv4-family unicast$", "ipv4-family unicast",
+                "华为的地址族关键字是 ipv4-family，不是 address-family。"),
+              F(r"^peer\s+\S+\s+enable$", "peer <邻居IP> enable")),
+          C: (F(r"^no bgp default ipv4-unicast$", "no bgp default ipv4-unicast",
+                "关闭默认的 IPv4 单播自动激活，PE 上常用，避免公网路由被无谓发出。"),
+              F(r"^neighbor\s+\S+\s+activate$", "neighbor <邻居IP> activate")),
+          R: (F(r"^no bgp default ipv4-unicast$", "no bgp default ipv4-unicast",
+                "关闭默认的 IPv4 单播自动激活。"),
+              F(r"^neighbor\s+\S+\s+activate$", "neighbor <邻居IP> activate")),
+      }),
+
+    D("BGP 邻居描述与验证", "三层",
+      "给邻居加一句描述便于识别，或用 TCP MD5 给会话加一层验证。",
+      caution="MD5 密钥两端必须完全一致，不一致会一直卡在 Connect 状态。",
+      forms={
+          H: (F(r"^peer\s+\S+\s+description\s+", "peer <邻居IP> description <描述>"),
+              F(r"^peer\s+\S+\s+password\s+", "peer <邻居IP> password { cipher | simple } <密钥>")),
+          W: (F(r"^peer\s+\S+\s+description\s+", "peer <邻居IP> description <描述>"),
+              F(r"^peer\s+\S+\s+password\s+", "peer <邻居IP> password { cipher | simple } <密钥>")),
+          C: (F(r"^neighbor\s+\S+\s+description\s+", "neighbor <邻居IP> description <描述>"),
+              F(r"^neighbor\s+\S+\s+password\s+", "neighbor <邻居IP> password <密钥>"),
+              F(r"^neighbor\s+\S+\s+timers\s+", "neighbor <邻居IP> timers <Keepalive> <Hold>")),
+          R: (F(r"^neighbor\s+\S+\s+description\s+", "neighbor <邻居IP> description <描述>"),
+              F(r"^neighbor\s+\S+\s+password\s+", "neighbor <邻居IP> password <密钥>"),
+              F(r"^neighbor\s+\S+\s+timers\s+", "neighbor <邻居IP> timers <Keepalive> <Hold>")),
+      }),
+
+    D("查看 BGP 邻居状态", "三层",
+      "看 BGP 邻居有没有起来。State/PfxRcd 那一列出现数字（收到的路由条数）"
+      "就说明会话已经 Established。",
+      caution="卡在 Connect 多半是 TCP 连不通或 MD5 不一致；"
+              "卡在 Active 通常是邻居地址不可达。",
+      forms={
+          H: F(r"^display bgp", "display bgp { peer | routing-table } [ipv4]"),
+          W: F(r"^display bgp", "display bgp { peer | routing-table }"),
+          C: F(r"^show (ip )?bgp", "show ip bgp summary / show ip bgp"),
+          R: F(r"^show (ip )?bgp", "show bgp summary / show bgp ipv4 unicast"),
+      }),
+
+    # ==================================================================
+    # 第三批：MPLS L3VPN
+    # ==================================================================
+
+    D("配置环回口作为 LSR ID", "三层",
+      "MPLS 需要一个稳定的标识，用 Loopback 地址最合适——只要设备不重启它就不会 down，"
+      "LDP 会话也就不会断。",
+      forms={
+          H: F(r"^interface Loopback", "interface Loopback<编号>"),
+          W: F(r"^interface LoopBack", "interface LoopBack<编号>",
+               "华为的环回口写法是大写 B 的 LoopBack0。"),
+          R: F(r"^interface Loopback", "interface Loopback <编号>",
+               "锐捷的接口名与编号之间有空格。"),
+      }),
+
+    D("开启 MPLS 与 LDP", "三层",
+      "在公网侧接口上打开 MPLS 转发和 LDP 标签分发。"
+      "LDP 负责和邻居协商标签，标签是 MPLS 转发的基础。",
+      params=(("LSR ID", "MPLS 域内的唯一标识，通常就是 Loopback 地址。"),
+              ("LDP Router ID", "不能用 0.0.0.0，必须是 32 位地址。")),
+      caution="前提是公网侧 IGP 已经跑通，且两端的 Loopback 都宣告进了 IGP，"
+              "否则 LDP 会话建不起来。接 CE 的接口不要开 MPLS。",
+      forms={
+          H: (F(r"^mpls lsr-id\s+", "mpls lsr-id <IP>", "H3C 没有单独的全局 mpls 命令。"),
+              F(r"^mpls ldp$", "mpls ldp", "全局开启 LDP。"),
+              F(r"^mpls enable$", "mpls enable", "接口下开启 MPLS 转发。"),
+              F(r"^mpls ldp enable$", "mpls ldp enable", "接口下开启 LDP。")),
+          W: (F(r"^mpls lsr-id\s+", "mpls lsr-id <IP>"),
+              F(r"^mpls$", "mpls", "全局开启 MPLS 转发。"),
+              F(r"^mpls ldp$", "mpls ldp", "全局开启 LDP；接口下也是 mpls 和 mpls ldp 两条。")),
+          C: (F(r"^mpls label protocol ldp$", "mpls label protocol ldp"),
+              F(r"^mpls ldp router-id\s+", "mpls ldp router-id <接口> [force]",
+                "force 让新的 Router ID 立即生效，不用等会话超时。"),
+              F(r"^mpls ip$", "mpls ip",
+                "全局和接口下都是这条命令，作用都是开启 MPLS 转发。")),
+          R: (F(r"^mpls ip$", "mpls ip", "锐捷用 mpls ip 全局开启 MPLS 转发。"),
+              F(r"^mpls router ldp$", "mpls router ldp", "进入 LDP 配置模式。"),
+              F(r"^ldp router-id\s+", "ldp router-id interface <接口> [force]",
+                "锐捷没有 mpls lsr-id，用这条指定 LDP Router ID。"),
+              F(r"^label-switch$", "label-switch",
+                "接口下开启标签交换。部分版本写作 label-switching，下发前用 ? 确认。")),
+      }),
+
+    D("创建 VPN 实例（VRF）", "三层",
+      "在一台物理设备上虚拟出多张独立的路由表，不同 VPN 的同网段地址就不会冲突。",
+      params=(("RD", "路由标识，给路由打上「属于哪个 VPN」的标记，两台 PE 上不能重复。"),
+              ("RT", "路由目标，决定路由在哪些 VPN 之间导入导出。")),
+      caution="本机的 RT 导入值要对上对端 PE 的导出值，配反了就是不通——"
+              "这是 MPLS VPN 不通最常见的原因。",
+      forms={
+          H: (F(r"^ip vpn-instance\s+", "ip vpn-instance <实例名>"),
+              F(r"^route-distinguisher\s+", "route-distinguisher <RD>"),
+              F(r"^vpn-target\s+", "vpn-target <RT> { import-extcommunity | export-extcommunity }",
+                "H3C 的 RD / RT 直接配在实例视图下。")),
+          W: (F(r"^ip vpn-instance\s+", "ip vpn-instance <实例名>"),
+              F(r"^ipv4-family$", "ipv4-family",
+                "华为要先进 ipv4-family 子视图，RD / RT 配在这里面。"),
+              F(r"^route-distinguisher\s+", "route-distinguisher <RD>"),
+              F(r"^vpn-target\s+", "vpn-target <RT> { export-extcommunity | import-extcommunity }")),
+          C: (F(r"^ip vrf\s+", "ip vrf <实例名>",
+                "老写法；较新的 IOS-XE 也可以写 vrf definition，两者不能混用。"),
+              F(r"^rd\s+", "rd <RD>"),
+              F(r"^route-target\s+", "route-target { export | import } <RT>")),
+          R: (F(r"^ip vrf\s+", "ip vrf <实例名>"),
+              F(r"^rd\s+", "rd <RD>"),
+              F(r"^route-target\s+", "route-target { export | import } <RT>")),
+      }),
+
+    D("把接口划入 VPN 实例", "三层",
+      "把接 CE 的接口绑定到 VPN 实例，这个口的地址就属于那张独立路由表了。",
+      caution="绑定操作会清掉接口上原有的 IP 配置，所以必须先绑实例、再配地址，"
+              "顺序反了地址就没了。这是配 MPLS VPN 最容易踩的坑。",
+      forms={
+          H: F(r"^ip binding vpn-instance\s+", "ip binding vpn-instance <实例名>"),
+          W: F(r"^ip binding vpn-instance\s+", "ip binding vpn-instance <实例名>"),
+          C: F(r"^ip vrf forwarding\s+", "ip vrf forwarding <实例名>"),
+          R: F(r"^ip vrf forwarding\s+", "ip vrf forwarding <实例名>"),
+      }),
+
+    D("MP-BGP 传递 VPN 路由", "三层",
+      "PE 之间用 VPNv4 地址族交换 VPN 路由，PE 与 CE 之间用普通 IPv4 邻居交换私网路由。",
+      params=(("VPNv4 地址族", "PE 之间传 VPN 路由用，路由带 RD 和 RT 扩展团体。"),
+              ("VPN 实例地址族", "PE 与 CE 之间的私网邻居配在这里。")),
+      caution="send-community extended 必须配，VPNv4 靠扩展团体携带 RT；"
+              "next-hop-local 让 PE 把下一跳改成本机，避免对端迭代不出隧道。",
+      forms={
+          H: (F(r"^address-family vpnv4$", "address-family vpnv4"),
+              F(r"^ip vpn-instance\s+", "ip vpn-instance <实例名>（BGP 视图下进入该 VPN 的地址族）"),
+              F(r"^peer\s+\S+\s+next-hop-local$", "peer <邻居IP> next-hop-local"),
+              F(r"^peer\s+\S+\s+connect-interface\s+", "peer <邻居IP> connect-interface <接口>")),
+          W: (F(r"^ipv4-family vpnv4$", "ipv4-family vpnv4"),
+              F(r"^policy vpn-target$", "policy vpn-target",
+                "按 RT 过滤收到的 VPN 路由，这是默认行为，写出来便于理解。"),
+              F(r"^ipv4-family vpn-instance\s+", "ipv4-family vpn-instance <实例名>"),
+              F(r"^peer\s+\S+\s+connect-interface\s+", "peer <邻居IP> connect-interface <接口>")),
+          C: (F(r"^address-family vpnv4$", "address-family vpnv4"),
+              F(r"^address-family ipv4 vrf\s+", "address-family ipv4 vrf <实例名>"),
+              F(r"^neighbor\s+\S+\s+send-community extended$", "neighbor <邻居IP> send-community extended"),
+              F(r"^neighbor\s+\S+\s+update-source\s+", "neighbor <邻居IP> update-source <接口>")),
+          R: (F(r"^address-family vpnv4 unicast$", "address-family vpnv4 unicast",
+                "锐捷比思科多一个 unicast。"),
+              F(r"^address-family ipv4 vrf\s+", "address-family ipv4 vrf <实例名>"),
+              F(r"^neighbor\s+\S+\s+send-community extended$", "neighbor <邻居IP> send-community extended"),
+              F(r"^neighbor\s+\S+\s+update-source\s+", "neighbor <邻居IP> update-source <接口>")),
+      }),
+
+    D("MPLS VPN 分段核对", "三层",
+      "MPLS VPN 出问题要分段查，从下往上：LDP 邻居 → 标签 → VPN 实例 → MP-BGP → VPN 路由。",
+      caution="哪一段断了就在哪一段停下排查，别一次看五张表，容易越看越乱。",
+      forms={
+          H: F(r"^display (mpls|ip vpn-instance|bgp vpnv4)",
+               "display { mpls ldp peer | mpls ldp lsp | ip vpn-instance | bgp vpnv4 ... }"),
+          W: F(r"^display (mpls|ip vpn-instance|bgp vpnv4)",
+               "display { mpls ldp peer | mpls lsp | ip vpn-instance | bgp vpnv4 all peer | ... }"),
+          C: F(r"^show (mpls|ip vrf|ip route vrf|ip bgp vpnv4)",
+               "show { mpls ldp neighbor | ip vrf | ip route vrf <实例> | ip bgp vpnv4 all summary }"),
+          R: F(r"^show (mpls|ip vrf|ip route vrf|bgp vpnv4)",
+               "show { mpls ldp neighbor | ip vrf | ip route vrf <实例> | bgp vpnv4 unicast summary }"),
+      }),
+
+    # ------------------------------------------------------------------
+    # 补充：路由引入、地址族、接口与三层开关
+    # ------------------------------------------------------------------
+
+    D("引入路由（把别的协议的路由发进来）", "三层",
+      "把直连、静态或其它协议学到的路由引入当前协议，让它们也能被发布出去。",
+      params=(("direct / connected", "引入直连网段，最常用。"),
+              ("static", "引入静态路由。")),
+      caution="引入时最好配路由策略过滤，否则容易把不该发布的路由也带出去，"
+              "严重时会造成路由环路。",
+      forms={
+          H: (F(r"^import-route\s+", "import-route { direct | static | ospf <进程> }"),
+              F(r"^  import-route\s+", "import-route { direct | static | ospf <进程> }")),
+          W: (F(r"^import-route\s+", "import-route { direct | static | ospf <进程> }"),
+              F(r"^  import-route\s+", "import-route { direct | static | ospf <进程> }")),
+          C: F(r"^ ?redistribute\s+", "redistribute { connected | static | ospf <进程> }"),
+          R: F(r"^ ?redistribute\s+", "redistribute { connected | static | ospf <进程> }"),
+      }),
+
+    D("进入 / 退出地址族视图", "三层",
+      "BGP 和 IS-IS 都按地址族组织配置：先进某个地址族视图，配完再退出来。"
+      "H3C / 华为的 IS-IS 要在 address-family ipv4 里写 import-route，"
+      "写在主视图里会报 Unrecognized command。",
+      forms={
+          H: F(r"^address-family (ipv4|ipv6|vpnv4|vpnv6)( unicast)?$",
+               "address-family { ipv4 [ unicast ] | ipv6 [ unicast ] | vpnv4 | vpnv6 }"),
+          W: (F(r"^ipv4-family( unicast)?$", "ipv4-family [ unicast ]",
+                "BGP 的地址族视图。"),
+              F(r"^address-family ipv4$", "address-family ipv4",
+                "IS-IS 打 import-route 时用的是这个地址族。")),
+          C: F(r"^exit-address-family$", "exit-address-family", "从地址族视图退出来。"),
+          R: F(r"^exit-address-family$", "exit-address-family"),
+      }),
+
+    D("三层接口命名（VLAN 接口）", "三层",
+      "交换机上跑路由通常用的是 VLAN 三层接口：先建 VLAN，再给 VLAN 接口配地址。"
+      "四家对这个接口的叫法不一样，填参数时注意区分。",
+      forms={
+          H: F(r"^interface Vlan-interface\s+", "interface Vlan-interface <VLAN号>"),
+          W: F(r"^interface Vlanif", "interface Vlanif<VLAN号>",
+               "华为的 VLAN 三层接口写作 Vlanif10，中间没有空格。"),
+          C: F(r"^interface Vlan\s?\d+$", "interface Vlan<VLAN号>"),
+          R: F(r"^interface Vlan\s+\d+$", "interface Vlan <VLAN号>",
+               "锐捷的接口名与编号之间有空格。"),
+      }),
+
+    D("开启 CEF（思科 MPLS 的前置条件）", "三层",
+      "思科跑 MPLS 必须先打开 Cisco Express Forwarding，"
+      "LDP 的标签转发信息要靠它下发到硬件。",
+      caution="没开 CEF 时 MPLS 相关配置能敲进去但不生效，"
+              "表现为「配置都对、标签就是不下发」。",
+      forms={
+          C: F(r"^ip cef$", "ip cef"),
+      }),
+
+    D("BGP 邻居变化日志", "三层",
+      "邻居建立或断开时打一条日志，排障时能看出它是什么时候掉的。",
+      forms={
+          C: F(r"^bgp log-neighbor-changes$", "bgp log-neighbor-changes"),
+          R: F(r"^bgp log-neighbor-changes$", "bgp log-neighbor-changes"),
+      }),
+
+    D("network 宣告网段", "三层",
+      "network 这条命令在不同视图下含义完全不同："
+      "在 DHCP 地址池视图下是「声明这个地址池的网段」，"
+      "在 BGP 视图下是「把这个网段对外宣告出去」。"
+      "看上下文判断，别混。",
+      caution="BGP 里宣告的网段必须在本机路由表里存在，否则宣告不出去。",
+      forms={
+          H: F(r"^network\s+\S+\s+\d+\.\d+\.\d+\.\d+$", "network <网段> <点分掩码>"),
+          W: F(r"^network\s+\S+\s+\d+\.\d+\.\d+\.\d+$", "network <网段> <点分掩码>"),
+          C: F(r"^network\s+\S+\s+mask\s+\d+\.\d+\.\d+\.\d+$", "network <网段> mask <点分掩码>"),
+          R: F(r"^network\s+\S+\s+mask\s+\d+\.\d+\.\d+\.\d+$", "network <网段> mask <点分掩码>"),
+      }),
 )
 
 

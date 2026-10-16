@@ -995,6 +995,214 @@ def _syslog(p, scenario) -> GenResult:
     return b.done()
 
 
+# --------------------------------------------------------------------------
+# 第三批：动态路由与 MPLS VPN
+# --------------------------------------------------------------------------
+
+_PHY_PREFIX = ("GigabitEthernet", "TenGigabitEthernet", "FastEthernet",
+               "FortyGigabitEthernet", "HundredGigabitEthernet", "Ethernet")
+
+
+def _l3_ifaces(p, vendor_key) -> list[str]:
+    out: list[str] = []
+    for v in B.split_ifaces(p.get("svlan")):
+        out.append(B.l3_iface(vendor_key, v))
+    out.extend(B.resolve_ifaces(p.get("ports"), vendor_key))
+    return out
+
+
+def _l3_blocks(b, port_list, body, comment="") -> None:
+    """锐捷的三层接口：物理口必须先 no switchport 才能配 IP。"""
+    physical, others = [], []
+    for name in port_list:
+        (physical if name.startswith(_PHY_PREFIX) else others).append(name)
+    if others:
+        b.block("三层接口配置", [_ENTER] + _if_blocks(others, body) + ["end"], comment)
+    if physical:
+        b.block("三层物理口配置（含 no switchport）",
+                [_ENTER] + _if_blocks(physical, ["no switchport"] + body) + ["end"],
+                comment="no switchport 会把端口从二层切成三层，"
+                        "端口上原有的 VLAN、Trunk 配置会被清掉，执行前请确认。")
+        b.warn("no switchport 会清空该端口原有的二层配置（VLAN、Trunk 等），"
+               "在生产设备上执行前务必确认这个口本来就该做三层口。")
+
+
+def _isis(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    net = B.ensure(p.get("net"), "NET 地址")
+    level = p.get("level", "level-2")
+    is_type = {"level-1": "level-1", "level-1-2": "level-1-2",
+               "level-2": "level-2-only"}.get(level, "level-2-only")
+
+    b.block("启用 IS-IS 并配置 NET", [
+        _ENTER, "ip routing", "router isis",
+        f" net {net}", f" is-type {is_type}",
+        f" metric-style {p.get('cost_style', 'wide')}",
+        " exit", "end",
+    ], comment="锐捷与思科同源，层级关键字是 level-2-only，度量风格是 metric-style。"
+               "部分 RGOS 版本的 metric-style 命令名不同，下发前用 ? 确认。")
+
+    if B.truthy(p.get("auth")):
+        key = B.ensure(p.get("auth_key"), "验证密钥")
+        b.block("配置验证钥匙串", [
+            _ENTER, "key chain ISIS-AUTH", " key 1",
+            f"  key-string {key}", "  exit", " exit", "end",
+        ], comment="锐捷的 IS-IS 验证走钥匙串，与思科一致。")
+
+    ifaces = _l3_ifaces(p, VENDOR.key)
+    if ifaces:
+        body = ["ip router isis"]
+        if p.get("circuit_level", "follow") != "follow":
+            lvl = p["circuit_level"]
+            body.append("isis circuit-type " + ("level-2-only" if lvl == "level-2" else lvl))
+        if B.truthy(p.get("auth")):
+            body += ["isis authentication mode md5",
+                     "isis authentication key-chain ISIS-AUTH"]
+        _l3_blocks(b, ifaces, body,
+                   comment="接口下用 ip router isis 使能。")
+    else:
+        b.warn("没有填三层接口，IS-IS 起来了也建不了邻接。")
+
+    if B.truthy(p.get("import_direct")):
+        b.block("引入直连路由",
+                [_ENTER, "router isis", " redistribute connected", " exit", "end"],
+                comment="把直连网段发布进 IS-IS，一般都要开。")
+
+    b.block("保存配置", _SAVE)
+    b.block("核对邻居与路由",
+            [_ENTER, "show isis neighbors", "show ip route isis", "end"],
+            comment="先看邻接是不是 Up，再看路由表里有没有学到对端网段。")
+    b.note("同一台设备只能有一个 IS-IS 实例运行在 Level-2（含 Level-1-2）。")
+    return b.done()
+
+
+def _bgp(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    local_as = B.ensure(p.get("local_as") or "65001", "本机 AS 号")
+    router_id = B.ensure(p.get("router_id"), "Router ID")
+    peers = B.parse_peers(p.get("peers", ""))
+    if not peers:
+        raise ValueError("请至少填写一个 BGP 邻居。")
+    nets = B.parse_networks(p.get("networks", ""))
+
+    lines = [_ENTER, "ip routing", f"router bgp {local_as}",
+             f" bgp router-id {router_id}", " bgp log-neighbor-changes"]
+    for peer in peers:
+        lines.append(f" neighbor {peer.ip} remote-as {peer.asn}")
+        if peer.desc:
+            lines.append(f" neighbor {peer.ip} description {peer.desc}")
+        if B.truthy(p.get("md5")):
+            key = B.ensure(p.get("md5_key"), "MD5 密钥")
+            lines.append(f" neighbor {peer.ip} password {key}")
+        ka = str(p.get("keepalive") or "").split()
+        if len(ka) == 2 and all(x.isdigit() for x in ka):
+            lines.append(f" neighbor {peer.ip} timers {ka[0]} {ka[1]}")
+    for net, plen in nets:
+        lines.append(f" network {net} mask {B.prefix_to_dotted(plen)}")
+    if B.truthy(p.get("import_direct")):
+        lines.append(" redistribute connected")
+    lines += [" exit", "end"]
+    b.block("配置 BGP 与邻居", lines,
+            comment="锐捷的 BGP 语法与思科基本一致，邻居命令是 neighbor。"
+                    "三层交换机别忘了 ip routing。")
+
+    b.block("保存配置", _SAVE)
+    b.block("核对邻居与路由",
+            [_ENTER, "show bgp summary", "show bgp ipv4 unicast", "end"],
+            comment="State/PfxRcd 那一列出现数字就是 Established。")
+    if B.truthy(p.get("md5")):
+        b.warn("TCP MD5 密钥在脚本里是明文，两端必须一致，不一致会一直卡在 Connect。")
+    b.note("IBGP 建议用 Loopback 建邻居，并配 neighbor <地址> update-source Loopback 0。")
+    return b.done()
+
+
+def _mplsvpn(p, scenario) -> GenResult:
+    b = B.Builder(VENDOR.name, scenario.name)
+    lsr = B.ensure(p.get("lsr_id"), "LSR ID")
+    as_num = B.ensure(p.get("as_number") or "100", "本域 AS 号")
+    pe_peer = B.ensure(p.get("pe_peer"), "对端 PE 的 Loopback")
+    core_vlan = B.ensure(p.get("core_svlan"), "公网侧 VLAN")
+    core_ip = B.ensure(p.get("core_ip"), "公网侧本机地址")
+    core_mask = str(p.get("core_mask") or "30")
+    vrf = B.ensure(p.get("vrf_name"), "VPN 实例名")
+    rd = B.ensure(p.get("rd"), "RD")
+    rt_in = B.ensure(p.get("rt_import"), "RT 导入值")
+    rt_out = B.ensure(p.get("rt_export"), "RT 导出值")
+    ce_vlan = B.ensure(p.get("ce_svlan"), "接 CE 的 VLAN")
+    ce_ip = B.ensure(p.get("ce_ip"), "CE 侧本机地址")
+    ce_mask = str(p.get("ce_mask") or "24")
+    ce_as = B.ensure(p.get("ce_as") or "65410", "CE 的 AS 号")
+    ce_peer = B.ensure(p.get("ce_peer_ip"), "CE 的接口地址")
+
+    loop = B.loopback_iface(VENDOR.key, 0)
+    core_if = B.l3_iface(VENDOR.key, core_vlan)
+    ce_if = B.l3_iface(VENDOR.key, ce_vlan)
+
+    b.block("先建好 Loopback", [
+        _ENTER, f"interface {loop}",
+        f" ip address {lsr} 255.255.255.255", " exit", "end",
+    ], comment="LSR ID 用 Loopback 地址最稳。锐捷的环回口写法是 Loopback 0，"
+               "接口名和编号之间有空格。")
+
+    b.block("开启 MPLS 与 LDP", [
+        _ENTER, "mpls ip", "mpls router ldp",
+        f" ldp router-id interface {loop} force", " exit",
+        f"interface {core_if}",
+        f" ip address {core_ip} {B.prefix_to_dotted(core_mask)}",
+        " mpls ip", " label-switch", " exit", "end",
+    ], comment="锐捷的写法和其他三家都不一样：全局是 mpls ip 开转发，"
+               "mpls router ldp 进 LDP 视图再用 ldp router-id 指定 Router ID，"
+               "没有 mpls lsr-id 这条命令。接口下要 mpls ip 加 label-switch 两条。")
+    b.warn("锐捷部分版本的接口命令写作 label-switching（带 ing），"
+           "本工具生成的是官方文档里的 label-switch，下发前请用 ? 确认。")
+
+    b.block("创建 VRF", [
+        _ENTER, f"ip vrf {vrf}",
+        f" rd {rd}",
+        f" route-target export {rt_out}",
+        f" route-target import {rt_in}",
+        " exit", "end",
+    ], comment="锐捷用 ip vrf（与思科一致）。")
+
+    b.block("把 CE 接口划入 VRF", [
+        _ENTER, f"interface {ce_if}",
+        f" ip vrf forwarding {vrf}",
+        f" ip address {ce_ip} {B.prefix_to_dotted(ce_mask)}",
+        " exit", "end",
+    ], comment="注意顺序：ip vrf forwarding 会清掉接口上原有的 IP 配置，"
+               "所以必须先划 VRF 再配地址，反了地址就没了。")
+
+    b.block("MP-BGP 传递 VPN 路由", [
+        _ENTER, f"router bgp {as_num}", " no bgp default ipv4-unicast",
+        f" neighbor {pe_peer} remote-as {as_num}",
+        f" neighbor {pe_peer} update-source {loop}",
+        " address-family vpnv4 unicast",
+        f"  neighbor {pe_peer} activate",
+        f"  neighbor {pe_peer} send-community extended",
+        "  exit-address-family",
+        f" address-family ipv4 vrf {vrf}",
+        f"  neighbor {ce_peer} remote-as {ce_as}",
+        f"  neighbor {ce_peer} activate",
+        "  redistribute connected",
+        "  exit-address-family",
+        " exit", "end",
+    ], comment="锐捷的 VPNv4 地址族写成 address-family vpnv4 unicast，"
+               "比思科多一个 unicast。")
+
+    b.block("保存配置", _SAVE)
+    b.block("分段核对", [
+        _ENTER, "show mpls ldp neighbor", "show mpls ldp binding",
+        "show ip vrf", "show bgp vpnv4 unicast summary",
+        f"show ip route vrf {vrf}", "end",
+    ], comment="按顺序查：LDP 邻居通了没、标签有没有下发、VRF 建了没、"
+               "MP-BGP 邻居起来没、VPN 路由收没收到。")
+    b.warn("MPLS 的前提是公网侧 IGP 已经跑通，而且两端的 Loopback 都要被宣告进 IGP，"
+           "否则 LDP 会话建不起来。建议先配 OSPF 或 IS-IS 那两条场景。")
+    b.warn("MPLS L3VPN 是路由器级特性。锐捷这边只有 N18K、S65 以上等高端型号支持，"
+           "普通接入交换机不具备这个能力，配置前先确认型号与 license。")
+    return b.done()
+
+
 _HANDLERS = {
     "vlan_port": _vlan_port,
     "lag": _lag,
@@ -1018,6 +1226,9 @@ _HANDLERS = {
     "inspect": _inspect,
     "backup": _backup,
     "syslog": _syslog,
+    "isis": _isis,
+    "bgp": _bgp,
+    "mplsvpn": _mplsvpn,
 }
 
 
