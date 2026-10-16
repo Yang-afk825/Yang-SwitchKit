@@ -1,0 +1,624 @@
+"""场景注册表。
+
+每个场景在这里声明它的参数（界面据此生成表单）、适用版本和注意事项。
+命令本身由 ``scg.vendors.*`` 各厂商模块生成，两边靠 ``Scenario.key`` 关联。
+"""
+from __future__ import annotations
+
+from .model import Kind, Param, Scenario
+
+# 常用端口写法提示，多处复用
+PORT_HINT = "支持 1/0/1-8、1/0/1-1/0/8、1/0/1,1/0/3，可带类型前缀如 XGE1/0/49。"
+
+SCENARIOS: tuple[Scenario, ...] = (
+
+    Scenario(
+        key="vlan_port",
+        name="VLAN 创建与端口划分",
+        group="二层",
+        summary="批量创建 VLAN，并把端口批量配成 Access 或 Trunk。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("vlans", "VLAN 列表", Kind.TEXT, "10,20,30",
+                  help="逗号分隔，支持区间写法如 10-14,20。", span=2),
+            Param("vlan_names", "VLAN 描述", Kind.TEXT, "",
+                  help="选填。如 10:Sales,20:IT。H3C/思科/锐捷用 name，华为用 description。",
+                  example="10:Sales,20:IT", span=2),
+            Param("port_type", "端口模式", Kind.CHOICE, "access",
+                  choices=(("access", "Access（接终端）"), ("trunk", "Trunk（设备互联）"))),
+            Param("ports", "端口", Kind.TEXT, "1/0/1-8", help=PORT_HINT, example="1/0/1-8"),
+            Param("allowed", "Trunk 放通 VLAN", Kind.TEXT, "all",
+                  help="仅 Trunk 模式生效。填 all 表示全部放通。", example="10,20,30"),
+            Param("pvid", "Trunk 缺省 VLAN", Kind.TEXT, "1",
+                  help="仅 Trunk 模式生效。互联口建议改成专用 VLAN，别用 VLAN 1。", example="1"),
+        ),
+        notes=(
+            "互联链路的缺省 VLAN 建议改为专用 VLAN，避免 VLAN 1 被利用。",
+            "Access 口上允许的业务 VLAN 由端口模式决定，不需要额外放通。",
+        ),
+    ),
+
+    Scenario(
+        key="lag",
+        name="链路聚合（LACP）",
+        group="二层",
+        summary="把多条物理链路捆成一条逻辑链路，提升带宽并做链路级冗余。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("group", "聚合组号", Kind.NUM, "1", example="1"),
+            Param("mode", "聚合模式", Kind.CHOICE, "lacp",
+                  choices=(("lacp", "动态 LACP"), ("static", "静态（手工）聚合"))),
+            Param("ports", "成员端口", Kind.TEXT, "1/0/1-2", help=PORT_HINT, example="1/0/1-2"),
+            Param("link_type", "聚合口类型", Kind.CHOICE, "trunk",
+                  choices=(("trunk", "Trunk"), ("access", "Access"), ("l3", "三层（需设备支持）"))),
+            Param("allowed", "放通 VLAN", Kind.TEXT, "10,20",
+                  help="仅 Trunk 生效。", example="10,20"),
+            Param("pvid", "缺省 VLAN", Kind.TEXT, "1", help="仅 Trunk 生效。"),
+        ),
+        notes=(
+            "成员口的速率、双工、VLAN 配置必须完全一致，否则无法加入聚合组。",
+            "跨设备聚合需要堆叠或 M-LAG / VSU 支持，单机聚合不跨设备。",
+        ),
+    ),
+
+    Scenario(
+        key="stacking",
+        name="堆叠 / IRF / VSU（设备虚拟化）",
+        group="高可用",
+        summary="把两台设备虚拟成一台，简化管理并提供设备级冗余。",
+        versions="H3C IRF（V7）· 华为 iStack（V5R5+）· 思科 StackWise / VPC · 锐捷 VSU",
+        reboot=True,
+        params=(
+            Param("member_id", "本机成员号", Kind.NUM, "1",
+                  help="生成的是「本机」命令，两台设备分别填 1 和 2 各生成一次。"),
+            Param("priority", "优先级", Kind.NUM, "32",
+                  help="数值越大越优先成为主机。H3C/华为/锐捷常见 32 与 16，思科 StackWise 为 1-15。"),
+            Param("port1", "堆叠口 1", Kind.TEXT, "Ten-GigabitEthernet1/0/49",
+                  help="填物理口全名或简写如 XGE1/0/49。", example="XGE1/0/49"),
+            Param("port2", "堆叠口 2", Kind.TEXT, "Ten-GigabitEthernet1/0/50",
+                  help="选填。双链路堆叠更可靠，建议成对使用。", example="XGE1/0/50"),
+            Param("domain", "虚拟域号", Kind.NUM, "1",
+                  help="IRF 域号 / VSU 域号。思科与华为的部分型号忽略此项。"),
+        ),
+        notes=(
+            "改成员号和激活堆叠口会重启设备并中断业务，务必在维护窗口内操作。",
+            "两台设备的命令必须分别生成、分别执行，先配从设备再配主设备。",
+            "堆叠线缆要按官方推荐的拓扑连接，避免单点故障。",
+        ),
+    ),
+
+    Scenario(
+        key="stp",
+        name="生成树（MSTP / RSTP）",
+        group="二层",
+        summary="配置生成树模式、根桥角色与实例映射，消除二层环路。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("mode", "生成树模式", Kind.CHOICE, "mstp",
+                  choices=(("mstp", "MSTP（多实例）"), ("rstp", "RSTP（快速）"), ("stp", "STP（标准，不推荐）"))),
+            Param("role", "根桥角色", Kind.CHOICE, "primary",
+                  choices=(("primary", "主根桥"), ("secondary", "备根桥"), ("none", "不指定"))),
+            Param("instances", "实例与 VLAN 映射", Kind.TEXT, "1:10,20;2:30,40",
+                  help="仅 MSTP。格式 实例号:VLAN列表，多组用分号分隔。", example="1:10,20;2:30,40", span=2),
+            Param("region", "MST 域名", Kind.TEXT, "REGION-1",
+                  help="仅 MSTP。同域设备的域名、修订级别、映射必须完全一致。"),
+            Param("revision", "MST 修订级别", Kind.NUM, "0", help="仅 MSTP。"),
+            Param("edge_ports", "接入口设为边缘端口", Kind.TEXT, "",
+                  help="接 PC / 服务器的端口，留空则不配置。" + PORT_HINT, example="1/0/1-8", span=2),
+        ),
+        notes=(
+            "全网生成树模式必须统一，混用 MSTP 与 RSTP 会算出意外的拓扑。",
+            "根桥应放在核心层，接入层设备不要抢根。",
+        ),
+    ),
+
+    Scenario(
+        key="dhcp",
+        name="DHCP 服务与中继",
+        group="三层",
+        summary="在三层接口上下发地址池，或把 DHCP 请求中继给外部服务器。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("mode", "角色", Kind.CHOICE, "server",
+                  choices=(("server", "本机做 DHCP 服务器"), ("relay", "DHCP 中继"))),
+            Param("vlan_id", "三层接口 VLAN", Kind.NUM, "10", example="10"),
+            Param("ip", "接口 IP", Kind.TEXT, "192.168.10.1"),
+            Param("mask", "掩码长度", Kind.NUM, "24", example="24"),
+            Param("pool", "地址池名称", Kind.TEXT, "POOL-VLAN10"),
+            Param("network", "地址池网段", Kind.TEXT, "192.168.10.0",
+                  help="仅服务器模式生效。", example="192.168.10.0"),
+            Param("gateway", "下发网关", Kind.TEXT, "192.168.10.1",
+                  help="仅服务器模式生效。"),
+            Param("dns", "下发 DNS", Kind.TEXT, "223.5.5.5",
+                  help="多个用逗号分隔。", example="223.5.5.5,119.29.29.29"),
+            Param("exclude", "排除地址", Kind.TEXT, "192.168.10.1-192.168.10.20",
+                  help="仅服务器模式生效。留给网关、服务器等静态设备。"),
+            Param("relay", "中继目标服务器", Kind.TEXT, "10.0.0.100",
+                  help="仅中继模式生效，可填多个用逗号分隔。", example="10.0.0.100"),
+        ),
+        notes=(
+            "服务器模式下要先在全局开启 DHCP 功能，否则地址池不生效。",
+            "中继模式只需在三层接口上指定服务器地址，不需要建地址池。",
+        ),
+    ),
+
+    Scenario(
+        key="static_route",
+        name="静态路由",
+        group="三层",
+        summary="配置到目标网段的静态路由，可用优先级实现浮动备份。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("routes", "路由条目", Kind.AREA,
+                  "0.0.0.0/0 10.1.1.1\n192.168.100.0/24 10.1.1.2",
+                  help="每行一条，格式：目标网段/掩码长度 下一跳 [优先级]。下一跳也可写出接口。",
+                  example="0.0.0.0/0 10.1.1.1", span=2),
+            Param("pref", "优先级（留空用默认）", Kind.TEXT, "",
+                  help="留空则不下发优先级字段。H3C/华为的静态路由优先级默认 60；"
+                       "思科/锐捷最后一段是管理距离，默认 1。两者都是数值越大越不优先。",
+                  example="100"),
+            Param("desc", "路由描述", Kind.TEXT, "",
+                  help="选填。仅 H3C/华为/锐捷支持描述字段。", span=2),
+        ),
+        notes=(
+            "浮动路由的做法：主路由优先级取默认值，备份路由填一个更大的值（更低优先级）。",
+            "下一跳必须在本机直连网段内，否则路由不生效。",
+        ),
+    ),
+
+    Scenario(
+        key="acl",
+        name="ACL 访问控制",
+        group="安全",
+        summary="定义访问控制列表并应用到接口，实现流量过滤。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("acl_id", "ACL 编号 / 名称", Kind.TEXT, "",
+                  help="H3C/华为：2000-2999 基础、3000-3999 高级。思科/锐捷：1-99 标准、100-199 扩展。留空则按场景自动选。",
+                  example="3000"),
+            Param("rules", "规则列表", Kind.AREA,
+                  "permit ip 192.168.10.0/24 any\npermit ip 192.168.20.0/24 192.168.30.0/24\ndeny ip any any",
+                  help="每行一条：动作 协议 源 目的 [目的端口]。网段写 a.b.c.d/掩码长度 或 any。",
+                  example="permit ip 192.168.10.0/24 any", span=2),
+            Param("apply_port", "应用到端口", Kind.TEXT, "1/0/24", help=PORT_HINT, example="1/0/24"),
+            Param("direction", "方向", Kind.CHOICE, "inbound",
+                  choices=(("inbound", "入方向 in"), ("outbound", "出方向 out"))),
+            Param("desc", "ACL 描述", Kind.TEXT, "", help="选填。", span=2),
+        ),
+        notes=(
+            "末尾建议保留显式拒绝规则，避免全部不匹配时默认放行。",
+            "命中次数为 0 的规则会掩盖配置错误，下发后用 display 命令核对计数。",
+        ),
+    ),
+
+    Scenario(
+        key="mirror",
+        name="端口镜像",
+        group="运维",
+        summary="把指定端口的流量复制到监控口，接抓包主机或 IDS。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("group", "镜像组号", Kind.NUM, "1", example="1"),
+            Param("source", "被镜像端口", Kind.TEXT, "1/0/1-4", help=PORT_HINT, example="1/0/1-4"),
+            Param("direction", "镜像方向", Kind.CHOICE, "both",
+                  choices=(("both", "双向 both"), ("inbound", "入方向 inbound"), ("outbound", "出方向 outbound"))),
+            Param("monitor", "监控端口", Kind.TEXT, "1/0/24",
+                  help="接抓包主机的端口。该口不要同时承载业务。", example="1/0/24"),
+            Param("vlan", "镜像 VLAN", Kind.TEXT, "",
+                  help="选填。填了就做 VLAN 镜像，而不是端口镜像。", example="100"),
+        ),
+        notes=(
+            "监控端口的带宽要大于被镜像端口的总流量，否则会丢包。",
+            "被镜像端口若同时配了端口隔离或聚合，镜像可能不生效。",
+        ),
+    ),
+
+    Scenario(
+        key="mgmt",
+        name="管理面加固（账号 / SSH / NTP / SNMP）",
+        group="运维",
+        summary="改设备名、配管理地址、建管理员账号，并启用 SSH、NTP、SNMP。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("sysname", "设备名", Kind.TEXT, "SW-CORE-01"),
+            Param("mgmt_vlan", "管理 VLAN", Kind.NUM, "99"),
+            Param("mgmt_ip", "管理地址", Kind.TEXT, "10.0.99.1"),
+            Param("mask", "掩码长度", Kind.NUM, "24"),
+            Param("gateway", "管理网关", Kind.TEXT, "10.0.99.254", help="选填。"),
+            Param("user", "管理员账号", Kind.TEXT, "netadmin"),
+            Param("password", "密码", Kind.TEXT, "N3t@dmin#2026",
+                  help="生成的配置是明文，请仅用于开局，之后统一改密。"),
+            Param("level", "权限级别", Kind.NUM, "15", help="0-15，15 为最高。"),
+            Param("ntp", "NTP 服务器", Kind.TEXT, "10.0.0.5", help="选填。"),
+            Param("snmp_ver", "SNMP 版本", Kind.CHOICE, "v2c",
+                  choices=(("v2c", "v2c（团体字）"), ("v3", "v3（用户名 + 认证）"), ("off", "不启用"))),
+            Param("snmp_community", "SNMP 团体字", Kind.TEXT, "Read@2026",
+                  help="v2c 时使用。生产环境务必改掉默认 public / private。"),
+            Param("snmp_trap", "Trap 接收地址", Kind.TEXT, "10.0.0.6", help="选填。"),
+            Param("domain", "SSH 域名", Kind.TEXT, "scg.local",
+                  help="思科/锐捷生成 RSA 密钥前必须先配置域名。", example="scg.local"),
+        ),
+        notes=(
+            "关闭 telnet、只保留 SSH，是管理面加固最基本的一条。",
+            "开局配置里的明文密码，交付前必须统一更换。",
+            "华为/H3C 的 RSA 密钥生成需要几分钟，属正常现象。",
+        ),
+    ),
+
+    Scenario(
+        key="gateway",
+        name="网关冗余（VRRP / HSRP）",
+        group="高可用",
+        summary="两台设备共用虚拟网关 IP，主设备故障时备设备自动接管。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("proto", "协议", Kind.CHOICE, "vrrp",
+                  choices=(("vrrp", "VRRP（四厂商通用）"), ("hsrp", "HSRP（思科 / 锐捷）"))),
+            Param("vlan_id", "接口 VLAN", Kind.NUM, "10", example="10"),
+            Param("group", "备份组号", Kind.NUM, "10",
+                  help="VRRP 组号 1-255；HSRP 组号 0-255。"),
+            Param("interface_ip", "本机接口 IP", Kind.TEXT, "192.168.10.1"),
+            Param("mask", "掩码长度", Kind.NUM, "24"),
+            Param("virtual_ip", "虚拟网关 IP", Kind.TEXT, "192.168.10.254"),
+            Param("priority", "优先级", Kind.NUM, "120",
+                  help="越大越优先。默认 100，主设备配 120、备设备保持默认即可。"),
+            Param("preempt", "启用抢占", Kind.BOOL, "1",
+                  help="主设备恢复后自动抢回，推荐开启。"),
+            Param("track", "上行链路监控", Kind.TEXT, "",
+                  help="选填。上行口 down 时自动降优先级，触发主备切换。", example="1/0/24"),
+        ),
+        notes=(
+            "两台设备的组号、虚拟 IP、认证参数必须完全一致，否则会形成双主。",
+            "主备优先级要拉开差距，避免频繁切换。",
+            "只有思科 / 锐捷支持 HSRP；VRRP 四家通用。",
+        ),
+    ),
+
+    # ==================================================================
+    # 第二批：二层安全与访问控制
+    # ==================================================================
+
+    Scenario(
+        key="port_isolation",
+        name="端口隔离（保护口）",
+        group="二层",
+        summary="同一个 VLAN 里让端口两两不能互访，接终端最常用的一招。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("ports", "需要隔离的端口", Kind.TEXT, "1/0/1-22",
+                  help="接终端的口。" + PORT_HINT, example="1/0/1-22", span=2),
+            Param("uplink", "上行口（不隔离）", Kind.TEXT, "1/0/24",
+                  help="选填。隔离口与非隔离口之间仍可互通，所以上行口要留出来。",
+                  example="1/0/24", span=2),
+            Param("group", "隔离组号", Kind.NUM, "1",
+                  help="仅 H3C / 华为使用。H3C 取值 1-8，华为取值 1-64。"),
+            Param("l3_isolate", "连三层一起隔离", Kind.BOOL, "0",
+                  help="默认只隔离二层，隔离口之间仍可经网关互访；勾上才是彻底隔离。"),
+        ),
+        notes=(
+            "隔离组内的端口互相不通，但与非隔离口（例如上行口）可以正常通信。",
+            "H3C 在 IRF 组网下不支持端口隔离；华为的管理口也不支持。",
+            "思科 / 锐捷的 switchport protected 关闭三层隔离需要额外一条全局命令。",
+        ),
+    ),
+
+    Scenario(
+        key="port_security",
+        name="端口安全与 MAC 绑定",
+        group="安全",
+        summary="限制端口下能接入的 MAC 数量，并可把 MAC 固化绑定，防私接。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("ports", "受控端口", Kind.TEXT, "1/0/1-8", help=PORT_HINT,
+                  example="1/0/1-8", span=2),
+            Param("max_mac", "最大 MAC 数", Kind.NUM, "3",
+                  help="端口下最多允许多少个 MAC 同时在线，超了就触发违例动作。"),
+            Param("action", "违例动作", Kind.CHOICE, "restrict",
+                  choices=(("restrict", "丢弃并告警 restrict"),
+                           ("shutdown", "关闭端口 shutdown"),
+                           ("protect", "只丢弃不告警 protect"))),
+            Param("sticky", "自动学习并固化 MAC", Kind.BOOL, "1",
+                  help="先让端口学到终端 MAC，再固化下来，适合成批部署。"),
+            Param("macs", "手工绑定的 MAC", Kind.TEXT, "",
+                  help="逗号分隔，写成 H-H-H 或 xxxx.xxxx.xxxx 均可。", span=2,
+                  example="0001-0002-0003,0001-0002-0004"),
+            Param("vlan", "绑定所属 VLAN", Kind.TEXT, "",
+                  help="选填。填了就按 VLAN 限定这条绑定。", example="10"),
+            Param("aging", "安全 MAC 老化时间", Kind.TEXT, "",
+                  help="选填，单位分钟。留空用设备默认值。", example="30"),
+        ),
+        notes=(
+            "端口安全是全局开关 + 端口参数两级配置，缺一不可。",
+            "H3C 开启端口安全会重置端口上的 802.1X 与 MAC 认证配置，二者不能共存。",
+            "开启后端口不能同时做镜像目的口、不能加入聚合组。",
+        ),
+    ),
+
+    Scenario(
+        key="storm_control",
+        name="广播风暴抑制",
+        group="安全",
+        summary="给端口设一个广播 / 组播 / 未知单播的流量上限，超了就丢包。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("ports", "受控端口", Kind.TEXT, "1/0/1-22", help=PORT_HINT,
+                  example="1/0/1-22", span=2),
+            Param("bcast", "抑制广播", Kind.BOOL, "1"),
+            Param("mcast", "抑制组播", Kind.BOOL, "1"),
+            Param("ucast", "抑制未知单播", Kind.BOOL, "0"),
+            Param("mode", "阈值单位", Kind.CHOICE, "percent",
+                  choices=(("percent", "按带宽百分比"), ("pps", "按包速率 pps"))),
+            Param("value", "阈值", Kind.TEXT, "10",
+                  help="百分比填 0-100；pps 填每秒包数。思科 / 锐捷通常默认就是 10%。",
+                  example="10"),
+        ),
+        notes=(
+            "阈值要按现场流量来定，一开始可以按百分比给一个偏保守的值，观察后再收紧。",
+            "华为的百分比模式必须同时给低阈值和高阈值两个值，工具会按阈值的一半自动算低阈值。",
+            "同一类型的报文不要同时配风暴抑制和接口流量阈值，会冲突。",
+        ),
+    ),
+
+    Scenario(
+        key="loop_guard",
+        name="环路检测与 BPDU 保护",
+        group="二层",
+        summary="接傻瓜交换机、随手插网线最容易出环路，这两条是兜底防护。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("vlans", "检测的 VLAN", Kind.TEXT, "10,20",
+                  help="留空用 all 表示所有已创建的 VLAN。", example="10,20", span=2),
+            Param("action", "检测到环路后", Kind.CHOICE, "shutdown",
+                  choices=(("shutdown", "关闭端口"), ("block", "阻塞端口"),
+                           ("log", "只记日志，不动端口"))),
+            Param("interval", "检测周期（秒）", Kind.NUM, "10"),
+            Param("bpdu_guard", "同时开启 BPDU 保护", Kind.BOOL, "1"),
+            Param("edge_ports", "边缘端口", Kind.TEXT, "1/0/1-22",
+                  help="接终端的口。BPDU 保护只对这些口有意义。" + PORT_HINT,
+                  example="1/0/1-22", span=2),
+        ),
+        notes=(
+            "BPDU 保护：边缘端口一旦收到 BPDU（说明下面接的不是终端而是交换机）立刻关闭端口。",
+            "环路检测靠设备自己发探测报文，傻瓜交换机不发 BPDU，只能靠它兜底。",
+            "锐捷的环路检测是全局开关，不能按端口单独开关。",
+        ),
+    ),
+
+    # ==================================================================
+    # 第二批：接入安全
+    # ==================================================================
+
+    Scenario(
+        key="dhcp_snooping",
+        name="DHCP Snooping",
+        group="安全",
+        summary="让交换机能识别合法的 DHCP 服务器，挡掉私接路由器发地址。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("vlans", "生效 VLAN", Kind.TEXT, "10,20", example="10,20", span=2),
+            Param("trust_ports", "信任端口", Kind.TEXT, "1/0/24",
+                  help="接合法 DHCP 服务器或上行口。非信任口收到 DHCP 应答会被丢弃。",
+                  example="1/0/24", span=2),
+            Param("check_mac", "校验请求报文源 MAC", Kind.BOOL, "1",
+                  help="把 DHCP 请求里的客户端 MAC 和报文源 MAC 比对，拦住伪造请求。"),
+        ),
+        notes=(
+            "只开 Snooping 不指定信任口，等于把所有 DHCP 应答都丢掉，配置要一次到位。",
+            "DHCP Snooping 的绑定表是后续 IP Source Guard、动态 ARP 检测的基础。",
+        ),
+    ),
+
+    Scenario(
+        key="arp_guard",
+        name="ARP 防护与 IP 源防护",
+        group="安全",
+        summary="拦伪造 ARP 报文和私改 IP 的终端，校园网里最常被要求配的一条。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("vlans", "生效 VLAN", Kind.TEXT, "10,20", example="10,20", span=2),
+            Param("trust_ports", "信任端口", Kind.TEXT, "1/0/24",
+                  help="上行口。只有信任口上来的 ARP 报文不做检查。", example="1/0/24",
+                  span=2),
+            Param("user_ports", "用户接入口", Kind.TEXT, "1/0/1-22",
+                  help="接终端的口。IP 源防护要逐口开启，填错会导致终端上不了网。"
+                       + PORT_HINT, example="1/0/1-22", span=2),
+            Param("validate", "校验报文违规项", Kind.BOOL, "1",
+                  help="校验目的 MAC、IP、源 MAC 是否与 ARP 报文内容一致。"),
+            Param("ip_source_guard", "同时开启 IP 源防护", Kind.BOOL, "1",
+                  help="按 DHCP Snooping 绑定表校验源 IP 与源 MAC，私改 IP 直接丢包。"),
+        ),
+        notes=(
+            "ARP 防护要配合 DHCP Snooping 用，绑定表是它的判断依据，建议先配那一条。",
+            "上行口一定要设为信任口，否则正常报文也会被拦。",
+            "静态 IP+MAC 绑定命令各家、各型号差异很大，本工具不生成，请对照本机手册单独配置。",
+        ),
+    ),
+
+    # ==================================================================
+    # 第二批：三层与组播
+    # ==================================================================
+
+    Scenario(
+        key="igmp_snooping",
+        name="组播 IGMP Snooping",
+        group="三层",
+        summary="让组播只在有接收者的端口上转发，IPTV、视频会议场景必备。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("vlans", "生效 VLAN", Kind.TEXT, "10", example="10", span=2),
+            Param("enable", "开启 IGMP Snooping", Kind.BOOL, "1"),
+            Param("querier", "开启查询器", Kind.BOOL, "1",
+                  help="VLAN 里没有三层组播设备时，交换机自己充当查询器。"),
+            Param("querier_ip", "查询器源地址", Kind.TEXT, "192.168.10.1",
+                  help="查询器模式下的源地址，建议用该 VLAN 的网关地址。", span=2),
+            Param("router_ports", "路由器 / 上行端口", Kind.TEXT, "1/0/24",
+                  help="选填。组播流量从这些口进来，会被当作上游口。",
+                  example="1/0/24", span=2),
+            Param("fast_leave", "快速离开", Kind.BOOL, "0",
+                  help="收到离开报文立即停止转发，减少换台延迟，但可能误伤。" ),
+        ),
+        notes=(
+            "同一 VLAN 里只能有一个查询器，多台设备都开容易互相干扰。",
+            "上行口建议手工指成路由器端口，避免组播流被误剪。",
+        ),
+    ),
+
+    Scenario(
+        key="ospf",
+        name="OSPF 基础",
+        group="三层",
+        summary="三层交换机之间跑动态路由最常用的协议，含被动接口与验证骨架。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("process", "进程号", Kind.NUM, "1",
+                  help="本机有效即可，两端进程号不要求一致。"),
+            Param("router_id", "Router ID", Kind.TEXT, "1.1.1.1",
+                  help="建议用手工指定的 Loopback 地址，别让它自动选举。"),
+            Param("networks", "宣告网段", Kind.AREA,
+                  "192.168.10.0/24 area 0\n192.168.20.0/24 area 0",
+                  help="每行一条：网段/掩码长度 区域。区域 0 是骨干区域。",
+                  example="192.168.10.0/24 area 0", span=2),
+            Param("passive", "接口设为被动", Kind.TEXT,
+                  "Vlan-interface 10",
+                  help="选填。接终端的接口设为被动，不发 Hello 但照样宣告网段。",
+                  span=2),
+            Param("auth", "区域验证", Kind.CHOICE, "off",
+                  choices=(("off", "不启用"), ("md5", "MD5 简易验证"))),
+            Param("auth_key", "验证密钥", Kind.TEXT, "Ospf@2026",
+                  help="仅 MD5 验证时使用。"),
+        ),
+        notes=(
+            "两端设备的区域号、验证方式、Hello/Dead 定时器必须一致，否则建立不了邻居。",
+            "宣称网段时用的是反掩码（思科 / 锐捷）或掩码长度（H3C / 华为），工具会按厂商转换。",
+            "Router ID 冲突会导致邻居反复震荡，务必手工指定。",
+        ),
+    ),
+
+    # ==================================================================
+    # 第二批：运维与巡检
+    # ==================================================================
+
+    Scenario(
+        key="qos_rate",
+        name="端口限速（QoS）",
+        group="运维",
+        summary="按端口限制上下行速率，宿舍、访客网络、专线接入口常用。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("ports", "限速端口", Kind.TEXT, "1/0/1-8", help=PORT_HINT,
+                  example="1/0/1-8", span=2),
+            Param("direction", "方向", Kind.CHOICE, "inbound",
+                  choices=(("inbound", "入方向（限制用户上行）"),
+                           ("outbound", "出方向（限制用户下行）"))),
+            Param("cir", "承诺速率 CIR", Kind.NUM, "10000",
+                  help="单位 kbps。10000 就是 10 Mbps。H3C 要求是 64 的整数倍。",
+                  example="10000"),
+            Param("cbs", "突发尺寸 CBS", Kind.TEXT, "",
+                  help="选填，单位字节。一般取 CIR × 突发容忍时间，经验值见说明。",
+                  example="200000"),
+        ),
+        notes=(
+            "CBS 太小会让 TCP 吞吐骤降，太大会失去限速意义；10 Mbps 限速可取 200000 字节。",
+            "入方向限的是用户上传，出方向限的是用户下载，按需求选对方向。",
+            "思科 / 锐捷的限速走 QoS 策略，需要先建 class-map，工具已一并生成。",
+        ),
+    ),
+
+    Scenario(
+        key="inspect",
+        name="巡检与排障命令",
+        group="运维",
+        summary="开局前后、报障时最常用的一批查询命令，四厂商各一套。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("basic", "设备信息与资源", Kind.BOOL, "1",
+                  help="版本、序列号、CPU、内存、启动时间。"),
+            Param("interface", "接口与流量", Kind.BOOL, "1",
+                  help="接口状态、收发计数、错包统计。"),
+            Param("l2", "二层转发表", Kind.BOOL, "1",
+                  help="MAC 表、VLAN、聚合、生成树。"),
+            Param("l3", "三层与地址", Kind.BOOL, "1",
+                  help="路由表、ARP、DHCP、VRRP。"),
+            Param("security", "安全与接入", Kind.BOOL, "1",
+                  help="DHCP Snooping、ARP 检测、端口安全的运行情况。"),
+            Param("hardware", "硬件与光模块", Kind.BOOL, "1",
+                  help="光模块收发功率、电源、风扇、PoE。"),
+            Param("logs", "日志与告警", Kind.BOOL, "1",
+                  help="日志缓冲区、告警、异常重启记录。"),
+            Param("export", "附带一键收集诊断信息", Kind.BOOL, "0",
+                  help="生成诊断文件，用于提交给厂商技术支持。这个动作比较重。"),
+        ),
+        notes=(
+            "巡检建议在业务低谷期做，部分 display 命令会占用较多 CPU。",
+            "报障时先在故障时刻留存一遍，再和正常时刻的输出对比，差异就是线索。",
+            "生成的是一整批查询命令，逐段复制到设备上执行即可，不会改动任何配置。",
+        ),
+    ),
+
+    Scenario(
+        key="backup",
+        name="配置备份与恢复",
+        group="运维",
+        summary="把配置存到 TFTP / FTP 服务器，出问题时能一键回滚。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("action", "要做什么", Kind.CHOICE, "backup",
+                  choices=(("backup", "备份当前配置到服务器"),
+                           ("restore", "从服务器恢复配置到设备"))),
+            Param("proto", "传输方式", Kind.CHOICE, "tftp",
+                  choices=(("tftp", "TFTP（简单，无认证）"),
+                           ("ftp", "FTP（需要账号密码）"))),
+            Param("server", "服务器地址", Kind.TEXT, "10.0.0.100", example="10.0.0.100"),
+            Param("filename", "文件名", Kind.TEXT, "SW-CORE-01.cfg",
+                  help="备份时用这个名字存到服务器；恢复时按这个名字去取。",
+                  example="SW-CORE-01.cfg", span=2),
+            Param("user", "FTP 用户名", Kind.TEXT, "netbackup",
+                  help="仅 FTP 时使用。"),
+            Param("password", "FTP 密码", Kind.TEXT, "Bak@2026",
+                  help="仅 FTP 时使用。脚本里是明文，用完请改。"),
+            Param("save_first", "备份前先保存当前配置", Kind.BOOL, "1",
+                  help="强烈建议勾上，否则备份到的可能是很久以前的启动配置。"),
+        ),
+        notes=(
+            "备份前先 save，否则存走的是上次保存的启动配置，不是当前运行配置。",
+            "恢复配置需要重启设备才完全生效，务必在维护窗口内操作。",
+            "脚本里如果写了密码，是明文的，用完请立刻更换。",
+        ),
+    ),
+
+    Scenario(
+        key="syslog",
+        name="日志与时钟",
+        group="运维",
+        summary="把日志送到日志服务器，并让设备时间保持准确。",
+        versions="Comware V5/V7 · VRP V5/V8 · IOS 12.x/15.x · RGOS 10.x/11.x",
+        params=(
+            Param("server", "日志服务器地址", Kind.TEXT, "10.0.0.7",
+                  help="选填。留空则只配本地日志。", example="10.0.0.7", span=2),
+            Param("level", "上报级别", Kind.CHOICE, "informational",
+                  choices=(("informational", "informational（常规信息，推荐）"),
+                           ("warning", "warning（只报警告及以上）"),
+                           ("error", "error（只报错误）"))),
+            Param("timestamps", "日志带时间戳", Kind.BOOL, "1",
+                  help="没有时间戳的日志在排障时几乎没用。"),
+            Param("ntp", "NTP 服务器", Kind.TEXT, "10.0.0.5",
+                  help="选填。和日志服务器一样，都是为了把时间对齐。", example="10.0.0.5"),
+            Param("timezone", "时区", Kind.TEXT, "UTC+08:00", example="UTC+08:00"),
+            Param("buffer", "本地日志缓冲条数", Kind.NUM, "512",
+                  help="设备本地能保存多少条日志。"),
+            Param("console", "同步输出到控制台", Kind.BOOL, "0",
+                  help="勾上会把日志实时打到 console 口，调试时方便，平时建议关掉。"),
+        ),
+        notes=(
+            "先把时钟对准，日志才有价值；建议同时配 NTP。",
+            "日志服务器地址和数据网段要能通，配完记得验证一条日志是否送达。",
+        ),
+    ),
+)
+
+BY_KEY: dict[str, Scenario] = {s.key: s for s in SCENARIOS}
+GROUPS: tuple[str, ...] = tuple(dict.fromkeys(s.group for s in SCENARIOS))
+
+
+def get(key: str) -> Scenario:
+    return BY_KEY[key]
