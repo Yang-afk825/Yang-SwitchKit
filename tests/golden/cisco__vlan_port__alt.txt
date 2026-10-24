@@ -1,0 +1,32 @@
+# ====================================================================
+# 思科 Cisco | VLAN 创建与端口划分
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 创建 VLAN ----
+# 思科的 VLAN 描述用 name，华为用 description。
+configure terminal
+vlan 10
+exit
+vlan 20
+exit
+vlan 30
+exit
+
+# ---- 配置 Trunk 端口 ----
+# switchport trunk encapsulation dot1q 仅部分平台需要，2960 等只支持 802.1Q 的机型若报错可删除此行。
+interface range GigabitEthernet1/0/1 - 8
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ exit
+
+# ---- 保存配置 ----
+end
+write memory
+
+# --------------------------------------------------------------------
+# [风险] Trunk 放通全部 VLAN 会扩大广播域，建议改为明确的 VLAN 列表。
+
+# --------------------------------------------------------------------
+# [提示] 互联链路的缺省 VLAN 建议改为专用 VLAN，避免 VLAN 1 被利用。
+# [提示] Access 口上允许的业务 VLAN 由端口模式决定，不需要额外放通。

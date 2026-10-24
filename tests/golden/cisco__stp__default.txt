@@ -1,0 +1,32 @@
+# ====================================================================
+# 思科 Cisco | 生成树（MSTP / RSTP）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 设置生成树模式 ----
+# 思科默认是 PVST+，与对端设备混用 MSTP 时要注意实例映射。
+configure terminal
+spanning-tree mode mst
+
+# ---- MST 域配置 ----
+# 思科的域配置用 exit 退出即生效，不需要额外的激活命令。
+configure terminal
+spanning-tree mst configuration
+ name REGION-1
+ revision 0
+ instance 1 vlan 10,20
+ instance 2 vlan 30,40
+exit
+
+# ---- 指定根桥角色 ----
+configure terminal
+spanning-tree mst 1 root primary
+spanning-tree mst 2 root primary
+
+# ---- 保存配置 ----
+end
+write memory
+
+# --------------------------------------------------------------------
+# [提示] 全网生成树模式必须统一，混用 MSTP 与 RSTP 会算出意外的拓扑。
+# [提示] 根桥应放在核心层，接入层设备不要抢根。

@@ -234,10 +234,11 @@ def _static_route(p, scenario) -> GenResult:
         if r.pref:
             cmd += f" {r.pref}"
         lines.append(cmd)
+    lines.append("end")
     b.block("配置静态路由", lines,
             comment="思科最后一段是管理距离（AD），默认 1，数值越大越不优先。"
                     "做浮动路由时给备份路由填一个更大的 AD，例如 200。")
-    lines = [_ENTER, "show ip route static", "show ip route summary"]
+    lines = ["show ip route static", "show ip route summary"]
     b.block("下发后核对", lines)
     b.block("保存配置", _SAVE)
     return b.done()
@@ -433,10 +434,11 @@ def _stacking(p, scenario) -> GenResult:
     b.block("设置堆叠优先级", [
         _ENTER,
         f"switch 1 priority {prio_val}",
+        "end",
     ], comment="堆叠编号用 show switch 确认，把命令里的 1 换成实际编号。"
                "StackWise 优先级 1-15，数值越大越优先成为 Active。")
 
-    b.block("保存并重启", [_ENTER, "write memory"], comment="保存后重启使堆叠生效。")
+    b.block("保存并重启", ["write memory"], comment="保存后重启使堆叠生效。")
     b.note("思科不同系列的堆叠实现差异很大：StackWise（3750/3850/9300）、"
            "StackWise-480、VSS（4500/6500）命令各不相同，此处仅给出 StackWise 骨架。")
     b.note("若是独立部署的 Nexus 系列做双活，应改用 vPC 方案，与 StackWise 无关。")
@@ -811,7 +813,7 @@ def _ospf(p, scenario) -> GenResult:
         b.warn(f"MD5 密钥 {key} 是明文，下发前请确认终端没被别人看到。")
 
     b.block("核对邻居与路由",
-            [_ENTER, "show ip ospf neighbor", "show ip route ospf", "end"],
+            ["show ip ospf neighbor", "show ip route ospf"],
             comment="先看邻居是不是 FULL，再看 OSPF 路由有没有进表。")
     b.note("两端设备的区域号、验证方式、Hello / Dead 定时器必须一致，否则建立不了邻居。")
     return b.done()
@@ -857,7 +859,7 @@ def _qos_rate(p, scenario) -> GenResult:
             [_ENTER] + _if_blocks(port_list, [svc]) + ["end", "write memory"],
             comment="入方向限的是用户上传，出方向限的是用户下载。")
     b.block("核对限速结果",
-            [_ENTER, f"show policy-map interface | include {name}", "end"],
+            [f"show policy-map interface | include {name}"],
             comment="看有没有命中计数，计数为 0 说明策略没生效。")
     b.note(f"当前限制的是{('入方向（用户上行）' if direction == 'inbound' else '出方向（用户下行）')}。")
     return b.done()
@@ -955,16 +957,16 @@ def _backup(p, scenario) -> GenResult:
     base = f"{proto}://{cred}{server}/{filename}"
 
     if B.truthy(p.get("save_first")):
-        b.block("先保存当前配置", [_ENTER, "write memory", "end"],
+        b.block("先保存当前配置", ["write memory"],
                 comment="不先保存的话，备份走的是上一次保存过的启动配置。")
 
     if action == "backup":
         b.block("备份配置到服务器",
-                [_ENTER, f"copy running-config {base}", "end",
+                [f"copy running-config {base}",
                  "! 上面一条把当前运行配置传到服务器；",
                  "! 想备份启动配置就换成：copy startup-config " + base],
                 comment="copy 会先问一句确认，回车即可。")
-        b.block("确认已保存", [_ENTER, "show startup-config", "end"],
+        b.block("确认已保存", ["show startup-config"],
                 comment="对比一下启动配置和你以为的一致。")
     else:
         b.warn("从服务器恢复配置：把文件直接覆盖 startup-config 后重启会替换全部配置，"
@@ -1019,7 +1021,7 @@ def _syslog(p, scenario) -> GenResult:
 
     b.block("保存配置", _SAVE)
     b.block("验证日志是否送达",
-            [_ENTER, "show logging", "show clock", "end"],
+            ["show logging", "show clock"],
             comment="配完在设备上制造一条日志（比如插拔一个端口），"
                     "去服务器上确认收到了。")
     return b.done()
@@ -1103,7 +1105,7 @@ def _isis(p, scenario) -> GenResult:
 
     b.block("保存配置", _SAVE)
     b.block("核对邻居与路由",
-            [_ENTER, "show isis neighbors", "show ip route isis", "end"],
+            ["show isis neighbors", "show ip route isis"],
             comment="先看邻接是不是 Up，再看路由表里有没有学到对端网段。")
     b.note("同一台设备只能有一个 IS-IS 实例运行在 Level-2（含 Level-1-2）。")
     return b.done()
@@ -1141,7 +1143,7 @@ def _bgp(p, scenario) -> GenResult:
 
     b.block("保存配置", _SAVE)
     b.block("核对邻居与路由",
-            [_ENTER, "show ip bgp summary", "show ip bgp", "end"],
+            ["show ip bgp summary", "show ip bgp"],
             comment="State/PfxRcd 那一列出现数字就是 Established。")
     if B.truthy(p.get("md5")):
         b.warn("TCP MD5 密钥在脚本里是明文，两端必须一致，不一致会一直卡在 Connect。")
@@ -1222,9 +1224,9 @@ def _mplsvpn(p, scenario) -> GenResult:
 
     b.block("保存配置", _SAVE)
     b.block("分段核对", [
-        _ENTER, "show mpls ldp neighbor", "show mpls ldp bindings",
+        "show mpls ldp neighbor", "show mpls ldp bindings",
         "show ip vrf", "show ip bgp vpnv4 all summary",
-        f"show ip route vrf {vrf}", "end",
+        f"show ip route vrf {vrf}",
     ], comment="按顺序查：LDP 邻居通了没、标签有没有下发、VRF 建了没、"
                "MP-BGP 邻居起来没、VPN 路由收没收到。")
     b.warn("MPLS 的前提是公网侧 IGP 已经跑通，而且两端的 Loopback 都要被宣告进 IGP，"
@@ -1274,7 +1276,7 @@ def _dot1x(p, scenario) -> GenResult:
 
     b.block("保存配置", _SAVE)
     b.block("核对认证状态",
-            [_ENTER, "show dot1x all summary", "show authentication sessions", "end"],
+            ["show dot1x all summary", "show authentication sessions"],
             comment="看端口状态是 AUTHORIZED 还是 UNAUTHORIZED。")
     if p.get("max_user"):
         b.note(f"单端口最大用户数填了 {p['max_user']}，但思科没有对应的命令——"
@@ -1306,7 +1308,7 @@ def _poe(p, scenario) -> GenResult:
                     "auto 让设备自己协商，never 完全不供电，static 按配置功率预留。"
                     "max 后面的单位是毫瓦。")
     b.block("核对供电状态",
-            [_ENTER, "show power inline", "show power inline module 1", "end"],
+            ["show power inline", "show power inline module 1"],
             comment="确认端口在供电、实际功率是多少、预算还剩多少。")
     b.block("保存配置", _SAVE)
     if p.get("priority"):
@@ -1358,7 +1360,7 @@ def _qos_priority(p, scenario) -> GenResult:
 
     b.block("保存配置", _SAVE)
     b.block("核对结果",
-            [_ENTER, "show mls qos interface", "show policy-map interface", "end"],
+            ["show mls qos interface", "show policy-map interface"],
             comment="确认信任模式生效、策略有命中计数。")
     b.note("有些 Catalyst 平台的命令写作 qos trust 而不是 mls qos trust，"
            "下发前用 ? 确认本机写法。")
@@ -1396,8 +1398,8 @@ def _ipv6(p, scenario) -> GenResult:
 
     b.block("保存配置", _SAVE)
     b.block("核对结果", [
-        _ENTER, "show ipv6 interface brief", "show ipv6 route",
-        "show ipv6 neighbors", "end",
+        "show ipv6 interface brief", "show ipv6 route",
+        "show ipv6 neighbors",
     ], comment="看接口地址、路由表和邻居表三项。")
     b.note("接口会自动生成 fe80:: 开头的链路本地地址，不要禁用。")
     return b.done()

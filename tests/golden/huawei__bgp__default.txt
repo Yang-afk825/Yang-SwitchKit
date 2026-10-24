@@ -1,0 +1,34 @@
+# ====================================================================
+# 华为 Huawei | BGP 基础（EBGP / IBGP）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 配置 BGP 与邻居 ----
+# 华为的地址族关键字是 ipv4-family（不是 address-family），而且必须进 ipv4-family unicast 再 peer enable 一次。
+system-view
+bgp 65001
+ router-id 1.1.1.1
+ peer 10.0.0.2 as-number 65002
+ peer 10.0.0.3 as-number 65003
+ ipv4-family unicast
+  peer 10.0.0.2 enable
+  peer 10.0.0.3 enable
+  network 192.168.10.0 255.255.255.0
+  quit
+ quit
+
+# ---- 保存配置 ----
+return
+save
+
+# ---- 核对邻居与路由 ----
+# State 要是 Established，路由表里要有你要的网段。
+system-view
+display bgp peer
+display bgp routing-table
+
+# --------------------------------------------------------------------
+# [提示] IBGP 建议用 Loopback 建邻居，并配 peer <地址> connect-interface LoopBack0。
+# [提示] H3C / 华为必须进地址族视图再用 peer enable 激活邻居，光创建邻居不激活，邻居是连不上的。
+# [提示] IBGP 邻居建议用 Loopback 建，并配 connect-interface / update-source。
+# [提示] 宣告的网段要在本机路由表里存在，且掩码要写对。

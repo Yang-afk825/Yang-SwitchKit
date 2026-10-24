@@ -1,0 +1,49 @@
+# ====================================================================
+# H3C 新华三 | 堆叠 / IRF / VSU（设备虚拟化）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 设置成员优先级与域 ----
+# 优先级数值越大越优先成为主机；域号可避免不同 IRF 误合并。
+system-view
+irf member 1 priority 32
+irf domain 1
+
+# ---- 堆叠口置为关闭（配置前必须） ----
+system-view
+interface Ten-GigabitEthernet1/0/49
+ shutdown
+ quit
+interface Ten-GigabitEthernet1/0/50
+ shutdown
+ quit
+
+# ---- 绑定 IRF 物理端口 ----
+# 同一成员的两个 IRF 端口不能绑定同一物理口。
+system-view
+irf-port 1/1
+ port group interface Ten-GigabitEthernet1/0/49
+ quit
+irf-port 1/2
+ port group interface Ten-GigabitEthernet1/0/50
+ quit
+
+# ---- 恢复堆叠口 ----
+system-view
+interface Ten-GigabitEthernet1/0/49
+ undo shutdown
+ quit
+interface Ten-GigabitEthernet1/0/50
+ undo shutdown
+ quit
+
+# ---- 保存并激活 IRF ----
+# 激活瞬间主备会重新选举，业务会有秒级抖动。
+system-view
+save force
+irf-port-configuration active
+
+# --------------------------------------------------------------------
+# [提示] 改成员号和激活堆叠口会重启设备并中断业务，务必在维护窗口内操作。
+# [提示] 两台设备的命令必须分别生成、分别执行，先配从设备再配主设备。
+# [提示] 堆叠线缆要按官方推荐的拓扑连接，避免单点故障。

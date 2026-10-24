@@ -1,0 +1,33 @@
+# ====================================================================
+# 锐捷 Ruijie | 生成树（MSTP / RSTP）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 启用生成树并设置模式 ----
+configure terminal
+spanning-tree
+spanning-tree mode mstp
+
+# ---- MST 域配置 ----
+# 锐捷的修订级别字段用 revision，且退出配置模式后立即生效。
+configure terminal
+spanning-tree mst configuration
+ name REGION-1
+ revision 0
+ instance 1 vlan 10,20
+ instance 2 vlan 30,40
+exit
+
+# ---- 指定根桥角色 ----
+# 锐捷用优先级间接指定根桥，主根 4096、备根 8192，数值越小越优先，步长 4096。
+configure terminal
+spanning-tree mst 1 priority 4096
+spanning-tree mst 2 priority 4096
+
+# ---- 保存配置 ----
+end
+write
+
+# --------------------------------------------------------------------
+# [提示] 全网生成树模式必须统一，混用 MSTP 与 RSTP 会算出意外的拓扑。
+# [提示] 根桥应放在核心层，接入层设备不要抢根。

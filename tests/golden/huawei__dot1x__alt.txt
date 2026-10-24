@@ -1,0 +1,55 @@
+# ====================================================================
+# 华为 Huawei | 802.1X 认证
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 配置 RADIUS 服务器模板 ----
+# 华为要先建 RADIUS 服务器模板，再让认证域去引用它。
+system-view
+radius-server template SCG-RADIUS
+ radius-server authentication 192.168.1.30 1812
+ radius-server accounting 192.168.1.30 1813
+ radius-server shared-key cipher Radius@123
+ quit
+
+# ---- 配置认证方案与认证域 ----
+# 认证方案决定用哪种方式认证，认证域把方案和 RADIUS 模板绑在一起。终端上填的账号要带上 @域名 后缀，或者把该域设为默认域。
+system-view
+aaa
+ authentication-scheme SCG-AUTH
+  authentication-mode radius
+  quit
+ domain scg.local
+  authentication-scheme SCG-AUTH
+  radius-server SCG-RADIUS
+  quit
+ quit
+
+# ---- 端口开启 802.1X ----
+# 华为是接口下 dot1x enable，没有全局开关。
+system-view
+interface range GigabitEthernet1/0/1 to GigabitEthernet1/0/8
+ dot1x enable
+ dot1x port-method portbased
+ dot1x port-control unauthorized-force
+ quit
+
+# ---- 保存配置 ----
+return
+save
+
+# ---- 核对认证状态 ----
+# 先看端口有没有在跑 802.1X，再看在线用户列表。
+system-view
+display dot1x
+display access-user
+
+# --------------------------------------------------------------------
+# [风险] 共享密钥在脚本里是明文，交付后请改成密文保存或立即更换。
+# [风险] 华为从 V600 版本起改用 NAC 认证模板模型（authentication-profile），接口下不再写 dot1x enable，而是绑认证模板。本工具生成的是 V200 的写法，下发前请先用 ? 确认本机属于哪套模型。
+
+# --------------------------------------------------------------------
+# [提示] 华为的 MAC 旁路认证要在认证模板里配，命令随版本差异较大，本工具没有生成，请用 ? 确认后手工补配。
+# [提示] 选基于 MAC 还是基于端口，取决于一个端口下接几台设备：接一台用 portbased，接 HUB 或多台用 macbased。
+# [提示] 端口先要能被 RADIUS 服务器访问到，认证报文走的是交换机的管理地址。
+# [提示] 802.1X 和端口安全不能同时开，H3C 上开端口安全会重置 802.1X 配置。

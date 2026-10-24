@@ -1,0 +1,38 @@
+# ====================================================================
+# 思科 Cisco | BGP 基础（EBGP / IBGP）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 配置 BGP 与邻居 ----
+# 思科 / 锐捷的邻居命令是 neighbor（H3C / 华为是 peer），Router ID 写成 bgp router-id，并默认激活，不需要额外地址族激活。
+configure terminal
+ip routing
+router bgp 65001
+ bgp router-id 1.1.1.1
+ bgp log-neighbor-changes
+ neighbor 10.0.0.2 remote-as 65002
+ neighbor 10.0.0.2 password Bgp@2026
+ neighbor 10.0.0.3 remote-as 65003
+ neighbor 10.0.0.3 password Bgp@2026
+ network 192.168.10.0 mask 255.255.255.0
+ redistribute connected
+ exit
+end
+
+# ---- 保存配置 ----
+end
+write memory
+
+# ---- 核对邻居与路由 ----
+# State/PfxRcd 那一列出现数字就是 Established。
+show ip bgp summary
+show ip bgp
+
+# --------------------------------------------------------------------
+# [风险] TCP MD5 密钥在脚本里是明文，两端必须一致，不一致会一直卡在 Connect。
+
+# --------------------------------------------------------------------
+# [提示] IBGP 建议用 Loopback 建邻居，并配 neighbor <地址> update-source Loopback0。
+# [提示] H3C / 华为必须进地址族视图再用 peer enable 激活邻居，光创建邻居不激活，邻居是连不上的。
+# [提示] IBGP 邻居建议用 Loopback 建，并配 connect-interface / update-source。
+# [提示] 宣告的网段要在本机路由表里存在，且掩码要写对。

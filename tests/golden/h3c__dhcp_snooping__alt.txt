@@ -1,0 +1,35 @@
+# ====================================================================
+# H3C 新华三 | DHCP Snooping
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 全局开启 DHCP Snooping ----
+# check mac-address 会把 DHCP 请求里的客户端 MAC 和报文源 MAC 比对，用于拦住伪造请求。
+system-view
+dhcp snooping enable
+
+# ---- 按 VLAN 开启 ----
+# 全局开关和 VLAN 开关都要打开，DHCP Snooping 才会在该 VLAN 生效。
+system-view
+vlan 10
+ dhcp snooping enable
+ quit
+vlan 20
+ dhcp snooping enable
+ quit
+
+# ---- 指定信任端口 ----
+# 只有信任端口上收到的 DHCP 应答才会被转发，其余一律丢弃。
+system-view
+interface GigabitEthernet1/0/24
+ dhcp snooping trust
+ quit
+
+# ---- 保存配置 ----
+return
+save force
+
+# --------------------------------------------------------------------
+# [提示] DHCP Snooping 产生的绑定表是动态 ARP 检测和 IP 源防护的判断依据，建议一起配。
+# [提示] 只开 Snooping 不指定信任口，等于把所有 DHCP 应答都丢掉，配置要一次到位。
+# [提示] DHCP Snooping 的绑定表是后续 IP Source Guard、动态 ARP 检测的基础。

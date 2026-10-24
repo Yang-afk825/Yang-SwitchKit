@@ -1,0 +1,44 @@
+# ====================================================================
+# H3C 新华三 | 日志与时钟
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 开启信息中心 ----
+# info-center enable 是日志功能的总开关，logbuffer size 决定本地能存多少条日志。
+system-view
+info-center enable
+info-center logbuffer size 512
+clock timezone UTC add 08:00:00
+
+# ---- 日志加时间戳 ----
+# 没有时间戳的日志在排障时几乎用不上，这一条建议保持开启。
+system-view
+info-center timestamp loghost date
+info-center timestamp log date
+info-center format unicom
+
+# ---- 配置日志服务器 ----
+# 只把 informational 及以上级别的日志送到服务器，避免刷屏。
+system-view
+info-center loghost 10.0.0.7
+info-center source default loghost level informational
+
+# ---- NTP 时间同步 ----
+# 时钟不准，日志的先后顺序就不可信了，NTP 和日志要一起配。
+system-view
+ntp-service enable
+ntp-service unicast-server 10.0.0.5
+
+# ---- 保存配置 ----
+return
+save force
+
+# ---- 验证日志是否送达 ----
+# 配完在设备上制造一条日志（比如插拔一个端口），去服务器上确认收到了。
+system-view
+display info-center
+display logbuffer summary
+
+# --------------------------------------------------------------------
+# [提示] 先把时钟对准，日志才有价值；建议同时配 NTP。
+# [提示] 日志服务器地址和数据网段要能通，配完记得验证一条日志是否送达。

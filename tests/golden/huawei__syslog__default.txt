@@ -1,0 +1,41 @@
+# ====================================================================
+# 华为 Huawei | 日志与时钟
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 开启信息中心 ----
+# info-center enable 是日志功能的总开关，logbuffer size 决定本地能存多少条日志。
+system-view
+info-center enable
+info-center logbuffer size 512
+clock timezone UTC add 08:00:00
+
+# ---- 日志加时间戳 ----
+# 没有时间戳的日志在排障时几乎用不上，这一条建议保持开启。
+system-view
+info-center timestamp loghost date
+info-center timestamp log date
+
+# ---- 配置日志服务器 ----
+# 华为的日志级别在 info-center source 命令里按模块单独设置，默认送出的级别已经覆盖 informational，如需收窄请用 info-center source default channel loghost log level informational。
+system-view
+info-center loghost 10.0.0.7
+
+# ---- NTP 时间同步 ----
+# 华为从 V200R003 起 NTP 默认就是开启的，只配服务器地址即可。时钟不准，日志的先后顺序就不可信，NTP 要和日志一起配。
+system-view
+ntp-service unicast-server 10.0.0.5
+
+# ---- 保存配置 ----
+return
+save
+
+# ---- 验证日志是否送达 ----
+# 配完在设备上制造一条日志（比如插拔一个端口），去服务器上确认收到了。
+system-view
+display info-center
+display logbuffer summary
+
+# --------------------------------------------------------------------
+# [提示] 先把时钟对准，日志才有价值；建议同时配 NTP。
+# [提示] 日志服务器地址和数据网段要能通，配完记得验证一条日志是否送达。

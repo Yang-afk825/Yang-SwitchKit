@@ -34,6 +34,14 @@ user32.ClientToScreen.argtypes = [wt.HWND, ctypes.POINTER(wt.POINT)]
 user32.ClientToScreen.restype = wt.BOOL
 user32.PrintWindow.argtypes = [wt.HWND, ctypes.c_void_p, ctypes.c_uint]
 user32.PrintWindow.restype = wt.BOOL
+user32.IsWindowVisible.argtypes = [wt.HWND]
+user32.IsWindowVisible.restype = wt.BOOL
+user32.GetWindowTextLengthW.argtypes = [wt.HWND]
+user32.GetWindowTextLengthW.restype = ctypes.c_int
+user32.GetWindowTextW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+user32.GetWindowTextW.restype = ctypes.c_int
+user32.EnumWindows.argtypes = [ctypes.c_void_p, wt.LPARAM]
+user32.EnumWindows.restype = wt.BOOL
 
 gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
 gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
@@ -76,16 +84,23 @@ def top_level_hwnd(widget) -> int:
 
 
 def grab_window(widget) -> Image.Image:
-    """抓取该控件所属顶层窗口当前的**客户区**画面。
-
-    注意：``PrintWindow`` 是整个窗口（含标题栏）往 DC 上画的，
-    而我们要的是客户区。所以按窗口尺寸建位图、画完之后再按
-    客户区在窗口里的偏移裁掉标题栏和边框——否则图片会整体下移，
-    底部那一条（状态栏）就被切掉了。
-    """
+    """抓取该控件所属顶层窗口当前的**客户区**画面。"""
     widget.update_idletasks()
-    hwnd = top_level_hwnd(widget)
+    return grab_hwnd(top_level_hwnd(widget))
 
+
+def grab_hwnd(hwnd: int, client_only: bool = True) -> Image.Image:
+    """抓任意窗口句柄的画面。
+
+    ``PrintWindow`` 是整个窗口（含标题栏）往 DC 上画的。
+    ``client_only=True``（默认）时按客户区在窗口里的偏移裁掉标题栏和边框，
+    否则图片会整体下移，底部那一条（状态栏）就被切掉了。
+
+    ``client_only=False`` 保留标题栏，用来展示窗口标题本身。
+
+    抓本程序自己的窗口用 ``grab_window(widget)``；
+    抓外部程序时直接传 HWND 进来，句柄可以用 :func:`find_window` 按标题找。
+    """
     client = wt.RECT()
     window = wt.RECT()
     user32.GetClientRect(hwnd, ctypes.byref(client))
@@ -122,5 +137,40 @@ def grab_window(widget) -> Image.Image:
         user32.ReleaseDC(hwnd, hdc)
 
     img = Image.frombuffer("RGBA", (ww, wh), buf, "raw", "BGRA", 0, 1)
-    img = img.crop((off_x, off_y, off_x + cw, off_y + ch))
+    if client_only:
+        img = img.crop((off_x, off_y, off_x + cw, off_y + ch))
     return img.convert("RGB")
+
+
+def find_window(title_part: str, timeout: float = 8.0) -> int:
+    """按标题片段找一个可见的顶层窗口，返回 HWND；超时返回 0。
+
+    抓外部程序窗口时用得上：程序启动后不一定马上把窗口建好，
+    而且 PyInstaller 产物是「引导进程 + 应用进程」两层，窗口出现得晚。
+    """
+    import time
+
+    found: list = []
+
+    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    def _callback(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        if title_part in buf.value:
+            found.append(hwnd)
+            return False
+        return True
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        found.clear()
+        user32.EnumWindows(_callback, 0)
+        if found:
+            return int(found[0])
+        time.sleep(0.2)
+    return 0

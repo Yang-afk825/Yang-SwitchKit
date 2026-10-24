@@ -1,0 +1,44 @@
+# ====================================================================
+# 华为 Huawei | IS-IS 基础
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 启用 IS-IS 并配置 NET ----
+# 官方建议 cost-style、is-level、network-entity 三条一起改时把 network-entity 放最后，避免配置顺序不对导致 IS-IS 进程重启。
+system-view
+isis 1
+ is-level level-2
+ cost-style narrow
+ network-entity 49.0001.0000.0000.0001.00
+ quit
+
+# ---- 接口使能 IS-IS ----
+# 只能建单层邻接时用 isis circuit-level 限制。华为还支持 hmac-sha256，写法是 isis authentication-mode hmac-sha256 key-id 1 cipher <密钥>。
+system-view
+interface Vlanif10
+ isis enable 1
+ isis circuit-level level-2
+ isis authentication-mode md5 plain Isis@2026
+ quit
+interface Vlanif20
+ isis enable 1
+ isis circuit-level level-2
+ isis authentication-mode md5 plain Isis@2026
+ quit
+
+# ---- 保存配置 ----
+return
+save
+
+# ---- 核对邻居与路由 ----
+# 先看邻接是不是 Up，再看路由表里有没有学到对端网段。
+system-view
+display isis peer
+display isis route
+display isis lsdb
+
+# --------------------------------------------------------------------
+# [提示] 同一台设备只能有一个 IS-IS 实例运行在 Level-2（含 Level-1-2）。
+# [提示] 同一台设备只能有一个 IS-IS 实例跑在 Level-2（含 Level-1-2）。
+# [提示] 成本风格（narrow / wide）全网必须一致，否则算出来的路径可能不对。
+# [提示] 配完记得确认 Link State PDU 里的邻接层级与预期一致。

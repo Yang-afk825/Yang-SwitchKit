@@ -109,12 +109,14 @@ Yang-SwitchKit/
 ├── main.py                  20 行   启动入口
 ├── build.py                 77 行   PyInstaller 打包脚本
 ├── scg/                             核心包（Switch Config Generator）
-│   ├── __init__.py           4 行   版本号
+│   ├── __init__.py           8 行   版本号（界面 / 关于框 / 方案文件共用）
 │   ├── model.py            137 行   数据模型：参数/场景/厂商/结果块
 │   ├── ports.py            182 行   端口写法解析与展开
 │   ├── registry.py         883 行   29 个场景的参数定义（唯一的「配置表」）
 │   ├── explain.py         2476 行   170 条命令概念的详解知识库
 │   ├── verify.py           157 行   正确性核验记录（纯数据）
+│   ├── project.py          237 行   方案文件读写（.json，不依赖界面）
+│   ├── compose.py          150 行   多场景合并整理：去重复的进视图与保存
 │   ├── vendors/
 │   │   ├── __init__.py      46 行   厂商聚合与分发
 │   │   ├── base.py         516 行   结果构建器 + 各厂商共用的解析工具
@@ -124,11 +126,17 @@ Yang-SwitchKit/
 │   │   └── ruijie.py      1403 行   锐捷 RGOS 10.x/11.x
 │   └── ui/
 │       ├── __init__.py       4 行
-│       ├── window.py      1087 行   主窗口：布局、交互、渲染
+│       ├── window.py      1378 行   主窗口：布局、交互、渲染、方案存取
+│       ├── dnd.py         149 行   文件拖放（Win32 窗口过程子类化）
 │       ├── theme.py        305 行   双主题调色板 + ttk 样式
 │       └── dpi.py           46 行   高 DPI 适配
+├── tests/
+│   └── golden/                     232 份生成快照（回归比对基线）
 ├── tools/
-│   ├── smoke_test.py        61 行   4 × 22 全组合冒烟测试
+│   ├── smoke_test.py        61 行   4 × 29 全组合冒烟测试
+│   ├── golden_test.py      274 行   快照回归 + 详解覆盖率 + 校验断言
+│   ├── project_test.py     169 行   方案文件往返与容错（不需要图形环境）
+│   ├── ui_smoke.py         131 行   界面接线冒烟（无图形环境时跳过）
 │   ├── verify_exe.py       114 行   验证打包产物能启动（不截图）
 │   ├── wincap.py           126 行   PrintWindow 抓窗口自身画面
 │   ├── make_icon.py        106 行   用代码画 ico
@@ -535,20 +543,123 @@ def px(value) -> int:              # 96 DPI 设计值 → 当前屏幕像素
 | `_collect(scenario)` | 把控件值读回 `{"参数名": "值"}` |
 | `_restore_fields()` | 反向：把存过的值填回控件 |
 | `_generate(key)` | 调 `vendors.generate()`，成功存 `results`，失败存 `errors` |
-| `_gen_all()` | 22 个场景一次跑完 |
+| `_gen_all()` | 29 个场景一次跑完 |
 | `_script_text()` | 唯一的文本产出点（脚本区 / 复制 / 导出共用） |
 | `_plain_text(keys)` | 「取消注释」模式：丢掉所有 `#` / `!` 开头行 |
 | `_refresh_output()` | 把文本写进只读输出框，逐行上色 |
 | `_refresh_doc()` | 渲染详解页当前视图 |
 | `_toggle_theme()` | 换主题 —— **必须整页重建**，见下文 |
+| `open_path(path)` | 按路径打开方案：菜单、命令行、拖放四条路都汇到这里 |
+
+#### 配套模块 `scg/ui/dnd.py` —— 窗口接收文件拖放（149 行）
+
+Tkinter 自己不处理文件拖放。常见做法是装 TkDND，但那要额外带一个 DLL，
+本项目约定「只用标准库、绿色单文件」，所以直接跟 Win32 打交道：
+
+1. `DragAcceptFiles(hwnd, True)` 告诉系统这个窗口接收文件
+2. 松手时系统往窗口过程发 `WM_DROPFILES`
+3. Tk 不暴露窗口过程，于是用 `SetWindowLongPtr` 换掉它，
+   自己处理 `WM_DROPFILES`，其余消息原样转给原来的过程
+
+**三个必须注意的地方**（都写在代码注释里）：
+
+- 窗口过程回调对象必须挂在实例上长期持有。ctypes 的回调被垃圾回收会直接
+  让进程崩，而且是延迟崩，最难查的那种。
+- 返回值在 64 位下是 8 字节，回调签名要写 `c_ssize_t`，写成 `c_long`
+  会把返回值截断。同理 `WNDPROC` 里所有句柄相关的 `argtypes` 都要显式声明。
+- **不要在窗口过程里直接加载方案**。加载会重建整个界面，放在消息处理里
+  太危险，扔回 Tk 的事件队列（`after_idle`）等这一轮消息处理完再干。
+
+`enable()` 全程 try/except，挂不上只返回 False，程序照常跑，
+拖放不可用而已。窗口销毁前 `disable()` 把原过程还回去，不留野指针。
 
 ---
 
-### 4.12 `tools/` —— 五个自检脚本
+### 4.12 `scg/project.py` —— 方案文件（237 行）
+
+把界面上填的一整屏参数序列化成 `.json`。**刻意不 import tkinter** ——
+这样 `tools/project_test.py` 能在没有图形环境的机器上验证读写逻辑，
+界面层只负责调 `dump()` / `load()`。
+
+文件结构（字段名直白到用户可以手改）：
+
+| 字段 | 作用 |
+|---|---|
+| `format` | 固定 `yang-switchkit-project`，认领标记，防选错文件 |
+| `format_version` | 格式版本，将来改结构时加一 |
+| `app_version` | 哪个版本存的，排障用 |
+| `saved_at` | 保存时间（带时区） |
+| `vendor` | 当前选中的厂商 |
+| `comments` | 「保留注释」开关 |
+| `theme` | 浅色 / 深色 |
+| `order` | 已生成的场景，按生成顺序 |
+| `params` | `{厂商: {场景: {参数: 值}}}`，四家各存一份 |
+
+**为什么存四家**：程序本来就按厂商分别保存参数（切换厂商不冲掉已填的值），
+方案文件跟着这个行为走，打开后才能来回切厂商看同一套规划。
+
+**容错分三层**，任何一层出问题只丢那一条，不整份拒绝：
+
+1. 未知厂商 / 场景 / 参数 → 丢弃，记一条警告交给界面弹窗
+2. 值统一转字符串，`null` 变空串
+3. `order` 去重、去未知项、保持原顺序
+
+真正整份拒绝只有三种：不是 JSON、没有 `format` 标记、`format_version` 比程序新。
+第三种是刻意的 —— 结构可能不兼容，硬读会静默丢参数，不如直接说清楚。
+
+```
+dump(Project) -> str                  # 写出去的内容一定合法，未知项被丢掉
+load(text) -> (Project, [警告])        # 格式不对抛 ProjectError
+to_file(path, Project) -> Path        # 顺带建父目录
+from_file(path) -> (Project, [警告])    # 编码 / IO 错误也转成 ProjectError
+```
+
+界面侧的接线在 `window.py` 的「方案文件：保存 / 打开」一节：
+`_collect_project()` 收集，`_apply_project()` 灌回去（先填 store 再整页重建），
+`_mark_dirty()` 由 `trace_add` 和 `<<Modified>>` 触发，`_silent` 在回填期间挡住误标。
+
+---
+
+---
+
+### 4.13 `scg/compose.py` —— 多场景合并整理（150 行）
+
+每个场景单独看都是完整的一段：自己进系统视图、配好、退出、保存。只生成一个
+场景没问题，三个场景拼在一起就露馅 —— 一份配置里八次 `system-view`、
+三次 `save force`，看着像程序在重复输出。这个模块负责收干净。
+
+| 函数 | 作用 |
+|---|---|
+| `vendor_cmds(key)` | 从厂商模块的 `_ENTER` / `_SAVE` 常量取进出视图与保存命令 |
+| `tidy_commands(lines, key)` | 进入视图只留第一个、保存只留最后一组、压掉双空行 |
+| `dedup_lines(lines)` | 提示行按归一化文本去重（只抹空白和斜杠，不动别的字） |
+
+**为什么思科 / 锐捷的 `configure terminal` 不删**
+
+这是模块里唯一的例外，也是想当然会踩的坑：H3C / 华为 的 `display` 在系统视图
+里照样能跑，中间的 `system-view` 删掉没有影响。但思科的 `show` **必须在特权
+模式**，中间的 `end` 和 `configure terminal` 是成对的 —— 删掉
+`configure terminal`，后面的配置命令就落在特权模式里报错；删掉 `end`，
+后面的 `show` 又跑到全局配置模式里报错。
+
+所以 `ENTER_SAFE_TO_SLIM` 只列了 `h3c` 和 `huawei`，其余两家只做保存合并。
+将来加新厂商，先确认它的查看命令在配置视图里能不能直接执行。
+
+**只在合并时生效**：单场景生成时 `tidy_commands` 原样返回，
+`tools/compose_test.py` 里有断言守着这一条。
+
+---
+
+### 4.14 `tools/` —— 九个自检脚本
 
 | 脚本 | 怎么用 | 保证什么 |
 |---|---|---|
 | `smoke_test.py` | `python tools/smoke_test.py` | 4 × 29 = 116 组全用默认参数生成一遍，任何异常即失败 |
+| `golden_test.py` | `python tools/golden_test.py` | 232 份快照逐行比对 + 详解覆盖率 100% + 非法参数仍被拒 |
+| `compose_test.py` | `python tools/compose_test.py` | 多场景合并的整理逻辑，四家各一遍；单场景输出不许变 |
+| `view_audit.py` | `python tools/view_audit.py` | 状态机走一遍脚本，抓「特权命令在配置视图里执行」，思科锐捷专用 |
+| `project_test.py` | `python tools/project_test.py` | 方案文件往返一致、坏文件被正确拒绝（27 项，不需要图形环境） |
+| `ui_smoke.py` | `python tools/ui_smoke.py` | 改参数 → 存方案 → 清空 → 打开 的接线（无图形环境自动跳过） |
 | `verify_exe.py` | `python tools/verify_exe.py <exe>` | 打包产物能起来、窗口标题对、尺寸合理、**不留孤儿进程** |
 | `wincap.py` | 被其它脚本 import | 用 `PrintWindow` 只抓窗口自身画面 |
 | `shot.py` | 开发自检 | 截 4 张图看视觉效果 |
@@ -563,7 +674,7 @@ def px(value) -> int:              # 96 DPI 设计值 → 当前屏幕像素
 
 ---
 
-### 4.13 `build.py` —— 打包（77 行）
+### 4.15 `build.py` —— 打包（77 行）
 
 ```
 1. 检查 PyInstaller（缺了就给带阿里云镜像的安装命令）
@@ -687,7 +798,7 @@ hit, total, miss = explain.coverage(vendor_key, result)
 ```
 h3c    512/512      huawei 478/478
 cisco  486/486      ruijie 487/487
-合计   1963/1963 = 100.00%
+合计   1899/1899 = 100.00%
 ```
 
 **这个数字是个安全网**：加新场景时如果忘了在 `explain.py` 补详解，
@@ -831,8 +942,18 @@ python tools/smoke_test.py
 # 看某个场景的具体输出
 python tools/smoke_test.py --show h3c/stacking
 
-# 检查详解覆盖率
-python -c "from scg import registry, explain; ..."   # 见 README「二次开发」
+# 快照回归：改了命令库之后必跑，看输出变了哪些
+python tools/golden_test.py
+python tools/golden_test.py --update        # 确认 diff 符合预期后再重建快照
+
+# 方案文件读写（不需要图形环境）
+python tools/project_test.py
+
+# 多场景合并的整理逻辑
+python tools/compose_test.py
+
+# 界面接线冒烟（没装图形环境会自动跳过）
+python tools/ui_smoke.py
 
 # 打包
 python build.py
@@ -845,4 +966,5 @@ python build.py
 2. **拆参数要用 `base.split_ifaces()`，不能用空白拆** ——
    `Vlan-interface 10`、`GigabitEthernet 0/0/1` 这类接口名自带空格，用空白拆会劈成两半。
 
-改完代码记得跑 `tools/smoke_test.py`，它会告诉你 116 组里有没有哪组挂了。
+改完代码跑 `tools/golden_test.py`：它同时会告诉你 116 组里哪组挂了、
+哪条命令没有详解、哪个本该被拒的参数组合被放过去了。

@@ -1,0 +1,46 @@
+# ====================================================================
+# 锐捷 Ruijie | 管理面加固（账号 / SSH / NTP / SNMP）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 设备名与管理地址 ----
+configure terminal
+hostname SW-CORE-01
+vlan 99
+ exit
+interface Vlan 99
+ ip address 10.0.99.1 255.255.255.0
+ exit
+ip route 0.0.0.0 0.0.0.0 10.0.99.254
+
+# ---- 管理员账号与 SSH ----
+# 锐捷默认关闭 SSH 服务端，必须显式 enable service ssh-server，否则客户端一定连不上；生成 RSA 密钥前必须先配好 hostname 与 ip domain-name。
+configure terminal
+username netadmin privilege 15 password N3t@dmin#2026
+ip domain-name scg.local
+crypto key generate rsa
+ip ssh version 2
+
+line vty 0 4
+ transport input ssh
+ login local
+ exec-timeout 10 0
+ exit
+enable service ssh-server
+no enable service telnet-server
+
+# ---- NTP 时间同步 ----
+configure terminal
+ntp server 10.0.0.5
+
+# ---- 保存配置 ----
+end
+write
+
+# --------------------------------------------------------------------
+# [风险] 脚本中的密码是明文，交付后请立即更换。
+
+# --------------------------------------------------------------------
+# [提示] 关闭 telnet、只保留 SSH，是管理面加固最基本的一条。
+# [提示] 开局配置里的明文密码，交付前必须统一更换。
+# [提示] 华为/H3C 的 RSA 密钥生成需要几分钟，属正常现象。

@@ -1,0 +1,31 @@
+# ====================================================================
+# 锐捷 Ruijie | IPv6 基础
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 开启 IPv6 并配置接口地址 ----
+# 锐捷和思科一样，必须先 ipv6 unicast-routing 才能转发 IPv6 报文。默认发路由通告，不要发才用 ipv6 nd ra suppress。
+configure terminal
+ipv6 unicast-routing
+ipv6 cef
+interface Vlan 10
+ ipv6 enable
+ ipv6 address 2001:db8:10::1/64
+ ipv6 nd ra suppress
+end
+
+# ---- 保存配置 ----
+end
+write
+
+# ---- 核对结果 ----
+# 看接口地址、路由表和邻居表三项。
+show ipv6 interface brief
+show ipv6 route
+show ipv6 neighbors
+
+# --------------------------------------------------------------------
+# [提示] 接口会自动生成 fe80:: 开头的链路本地地址，不要禁用。
+# [提示] IPv6 接口会自动生成一个链路本地地址（fe80:: 开头），这是邻居发现协议用的，不要禁用。
+# [提示] 思科 / 锐捷必须先在全局打开 ipv6 unicast-routing，否则接口配了地址也转发不了。
+# [提示] IPv6 没有广播，都靠组播；ARP 的活由邻居发现（ND）接管。

@@ -1,0 +1,33 @@
+# ====================================================================
+# 思科 Cisco | 端口限速（QoS）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 定义限速策略 ----
+# 思科的 police 单位是 bps，所以 10000 kbps 换算成 10000000 bps。exceed-action drop 表示超速直接丢弃；想改成降级转发可以用 exceed-action policed-dscp-transmit。
+configure terminal
+policy-map SCG-RATE-10000K
+ class class-default
+  police 10000000 conform-action transmit exceed-action drop
+  exit
+ exit
+end
+
+# ---- 在端口上应用策略 ----
+# 入方向限的是用户上传，出方向限的是用户下载。
+configure terminal
+interface range GigabitEthernet1/0/1 - 8
+ service-policy outbound SCG-RATE-10000K
+ exit
+end
+write memory
+
+# ---- 核对限速结果 ----
+# 看有没有命中计数，计数为 0 说明策略没生效。
+show policy-map interface | include SCG-RATE-10000K
+
+# --------------------------------------------------------------------
+# [提示] 当前限制的是出方向（用户下行）。
+# [提示] CBS 太小会让 TCP 吞吐骤降，太大会失去限速意义；10 Mbps 限速可取 200000 字节。
+# [提示] 入方向限的是用户上传，出方向限的是用户下载，按需求选对方向。
+# [提示] 思科 / 锐捷的限速走 QoS 策略，需要先建 class-map，工具已一并生成。

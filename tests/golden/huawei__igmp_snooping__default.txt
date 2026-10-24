@@ -1,0 +1,38 @@
+# ====================================================================
+# 华为 Huawei | 组播 IGMP Snooping
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 开启 IGMP Snooping ----
+# 先开全局，再逐 VLAN 开，两步都要做。
+system-view
+igmp-snooping enable
+vlan 10
+ igmp-snooping enable
+ quit
+
+# ---- 配置 IGMP 查询器 ----
+# VLAN 内没有三层组播设备时，由交换机自己发查询报文维持组播表项。
+system-view
+vlan 10
+ igmp-snooping querier enable
+ igmp-snooping querier source-address 192.168.10.1
+ quit
+
+# ---- 静态指定路由器端口 ----
+# 华为的三层接口叫 Vlanif，注意与 H3C 的 Vlan-interface 区分。
+system-view
+interface Vlanif 10
+ igmp-snooping router-port interface GigabitEthernet1/0/24
+ quit
+
+# ---- 保存配置 ----
+return
+save
+
+# --------------------------------------------------------------------
+# [风险] 同一个 VLAN 里只应存在一个 IGMP 查询器，多台设备都开容易互相干扰。
+
+# --------------------------------------------------------------------
+# [提示] 同一 VLAN 里只能有一个查询器，多台设备都开容易互相干扰。
+# [提示] 上行口建议手工指成路由器端口，避免组播流被误剪。

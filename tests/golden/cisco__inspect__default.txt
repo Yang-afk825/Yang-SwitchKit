@@ -1,0 +1,92 @@
+# ====================================================================
+# 思科 Cisco | 巡检与排障命令
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 设备信息与资源 ----
+# 开局先留一份基线，出问题时拿它对比。
+show version
+show inventory
+show clock
+show processes cpu sorted
+show processes memory sorted
+show boot
+show environment all
+show module
+
+# ---- 接口与流量 ----
+# 看错包、丢包和速率，是判断链路质量最快的一组命令。
+show interfaces status
+show interfaces
+show interfaces counters errors
+show interfaces counters
+show interfaces | include error|drops
+show interfaces link
+show controllers ethernet-controller phy
+
+# ---- 二层转发表 ----
+# MAC 表在两三个口之间来回跳，基本就是环路或 MAC 漂移。
+show vlan brief
+show vlan
+show mac address-table
+show mac address-table count
+show etherchannel summary
+show spanning-tree
+show spanning-tree summary
+show cdp neighbors detail
+show lldp neighbors
+
+# ---- 三层与地址 ----
+# 先看路由表里有没有你要的那条，再看 ARP 学没学到对端。
+show ip route
+show ip route summary
+show arp
+show ip interface brief
+show ip dhcp binding
+show standby brief
+show ip ospf neighbor
+show ip ospf route
+
+# ---- 安全与接入 ----
+# 命中计数长期为 0 的规则，往往说明它根本没生效。
+show ip dhcp snooping
+show ip dhcp snooping binding
+show ip arp inspection
+show ip arp inspection statistics
+show port-security
+show port-security address
+show ip verify source
+show authentication sessions
+show access-lists
+show policy-map interface
+
+# ---- 硬件与光模块 ----
+# 光模块收发功率是排查「链路 up 但丢包」的关键数据。
+show interfaces transceiver
+show interfaces transceiver detail
+show power inline
+show env all
+show env power
+
+# ---- 日志与告警 ----
+# err-disabled 列表能一眼看出哪些口被保护机制关掉了。
+show logging
+show logging | include %
+show archive log config all
+show version | include uptime
+show reload
+show errdisable recovery
+show interfaces status err-disabled
+
+# ---- 保存当前配置（便于与巡检输出对照） ----
+end
+write memory
+
+# --------------------------------------------------------------------
+# [风险] show tech-support 会占用较多 CPU 且输出很长，请在业务低谷期执行，并把终端日志功能打开，否则刷屏的内容会丢。
+
+# --------------------------------------------------------------------
+# [提示] 以上全部是查询命令，不会改动设备配置，可以放心执行。
+# [提示] 巡检建议在业务低谷期做，部分 display 命令会占用较多 CPU。
+# [提示] 报障时先在故障时刻留存一遍，再和正常时刻的输出对比，差异就是线索。
+# [提示] 生成的是一整批查询命令，逐段复制到设备上执行即可，不会改动任何配置。

@@ -1,0 +1,57 @@
+# ====================================================================
+# 思科 Cisco | IS-IS 基础
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 启用 IS-IS 并配置 NET ----
+# 思科 / 锐捷的层级关键字是 level-2-only（多一个 only），度量风格命令是 metric-style，都跟 H3C / 华为不一样。三层交换机别忘了 ip routing。
+configure terminal
+ip routing
+router isis
+ net 49.0001.0000.0000.0001.00
+ is-type level-2-only
+ metric-style narrow
+ exit
+end
+
+# ---- 配置验证钥匙串 ----
+# 思科 / 锐捷的 IS-IS 验证要先建 key chain，再到接口上引用。H3C / 华为是直接在接口下写密钥，不用钥匙串。
+configure terminal
+key chain ISIS-AUTH
+ key 1
+  key-string Isis@2026
+  exit
+ exit
+end
+
+# ---- 三层接口配置 ----
+# 接口下用 ip router isis 使能，只能建单层邻接时用 isis circuit-type 限制。
+configure terminal
+interface Vlan10
+ ip router isis
+ isis circuit-type level-2-only
+ isis authentication mode md5
+ isis authentication key-chain ISIS-AUTH
+ exit
+interface Vlan20
+ ip router isis
+ isis circuit-type level-2-only
+ isis authentication mode md5
+ isis authentication key-chain ISIS-AUTH
+ exit
+end
+
+# ---- 保存配置 ----
+end
+write memory
+
+# ---- 核对邻居与路由 ----
+# 先看邻接是不是 Up，再看路由表里有没有学到对端网段。
+show isis neighbors
+show ip route isis
+
+# --------------------------------------------------------------------
+# [提示] 同一台设备只能有一个 IS-IS 实例运行在 Level-2（含 Level-1-2）。
+# [提示] 同一台设备只能有一个 IS-IS 实例跑在 Level-2（含 Level-1-2）。
+# [提示] 成本风格（narrow / wide）全网必须一致，否则算出来的路径可能不对。
+# [提示] 配完记得确认 Link State PDU 里的邻接层级与预期一致。

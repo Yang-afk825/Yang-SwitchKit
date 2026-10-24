@@ -1,0 +1,39 @@
+# ====================================================================
+# 锐捷 Ruijie | ARP 防护与 IP 源防护
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 开启动态 ARP 检测（DAI） ----
+# DAI 靠 DHCP Snooping 绑定表判断报文是否合法，所以要先开 DHCP Snooping 并指定信任端口。
+configure terminal
+ip dhcp snooping
+ip dhcp snooping vlan 10,20
+ip arp inspection vlan 10,20
+ip arp inspection validate src-mac dst-mac ip
+end
+
+# ---- 指定信任端口 ----
+# 上行口必须同时设为两者的信任口，否则来自网关的正常 ARP 会被丢弃。
+configure terminal
+interface GigabitEthernet 1/0/24
+ ip dhcp snooping trust
+ ip arp inspection trust
+ exit
+end
+
+# ---- 保存配置 ----
+end
+write
+
+# ---- 核对结果 ----
+# 确认生效的 VLAN 列表与信任端口是否正确。
+show ip arp inspection
+
+# --------------------------------------------------------------------
+# [风险] IP 源防护依赖绑定表。终端若用静态 IP，必须先建静态绑定，否则它会连不上网。
+
+# --------------------------------------------------------------------
+# [提示] IP 源防护的命令随 RGOS 版本差异较大（ip verify source / ip source-guard），本工具没有生成，请用 ? 确认后再配。
+# [提示] ARP 防护要配合 DHCP Snooping 用，绑定表是它的判断依据，建议先配那一条。
+# [提示] 上行口一定要设为信任口，否则正常报文也会被拦。
+# [提示] 静态 IP+MAC 绑定命令各家、各型号差异很大，本工具不生成，请对照本机手册单独配置。

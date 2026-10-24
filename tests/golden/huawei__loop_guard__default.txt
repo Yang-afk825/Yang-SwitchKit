@@ -1,0 +1,36 @@
+# ====================================================================
+# 华为 Huawei | 环路检测与 BPDU 保护
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 全局开启 Loop Detection ----
+# 必须先开全局开关，再开 VLAN 开关，两步都做了才生效。全局开启后每个接口默认都参与检测。
+system-view
+loop-detection enable
+loop-detection enable vlan 10 20
+loop-detection interval-time 10
+
+# ---- 全局开启 BPDU 保护 ----
+# 边缘端口一旦收到 BPDU，说明下面接的不是终端而是交换机，设备会直接把该端口关闭。
+system-view
+stp bpdu-protection
+
+# ---- 设置边缘端口 ----
+# 只有边缘端口才受 BPDU 保护管辖；上行口不要配。
+system-view
+interface range GigabitEthernet1/0/1 to GigabitEthernet1/0/22
+ stp edged-port enable
+ quit
+
+# ---- 保存配置 ----
+return
+save
+
+# --------------------------------------------------------------------
+# [风险] Loop Detection 与 ERPS、RRPP、SEP、Smart Link、STP/RSTP/MSTP 冲突。跑了环网协议的接口，要先在接口下执行 loop-detection disable 把它关掉。
+# [风险] 部分 V200 版本的处理动作关键字是 loop-detection mode {block | nolearning | shutdown | quitvlan | trap}，本工具生成的是 port-shutdown 写法，下发前请用 loop-detection mode ? 确认。
+
+# --------------------------------------------------------------------
+# [提示] BPDU 保护：边缘端口一旦收到 BPDU（说明下面接的不是终端而是交换机）立刻关闭端口。
+# [提示] 环路检测靠设备自己发探测报文，傻瓜交换机不发 BPDU，只能靠它兜底。
+# [提示] 锐捷的环路检测是全局开关，不能按端口单独开关。

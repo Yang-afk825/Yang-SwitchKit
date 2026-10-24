@@ -1,0 +1,29 @@
+# ====================================================================
+# 锐捷 Ruijie | 端口安全与 MAC 绑定
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 配置端口安全 ----
+# 锐捷的命令是 switchport port-security（不是 port-security enable）。违例动作可取 protect / restrict / shutdown。
+configure terminal
+interface range GigabitEthernet 1/0/1-8
+ switchport port-security
+ switchport port-security maximum 3
+ switchport port-security violation protect
+ exit
+end
+write
+
+# ---- 查看端口安全状态 ----
+# 确认绑定表里是否已经出现了你想要的 MAC，以及违例计数有没有涨。
+show port-security
+show port-security address
+
+# --------------------------------------------------------------------
+# [风险] SPAN 的目的端口不能配端口安全；DHCP Snooping 的信任端口上也配不了。
+# [风险] 端口安全不能与全局 IP+MAC 绑定、IP Source Guard 同时生效，配了 MAC 绑定的口会绕过端口安全检查。
+
+# --------------------------------------------------------------------
+# [提示] 端口安全是全局开关 + 端口参数两级配置，缺一不可。
+# [提示] H3C 开启端口安全会重置端口上的 802.1X 与 MAC 认证配置，二者不能共存。
+# [提示] 开启后端口不能同时做镜像目的口、不能加入聚合组。

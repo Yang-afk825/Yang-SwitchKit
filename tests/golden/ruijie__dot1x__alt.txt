@@ -1,0 +1,43 @@
+# ====================================================================
+# 锐捷 Ruijie | 802.1X 认证
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 配置 RADIUS 与 AAA ----
+# 锐捷的 RADIUS 配置比思科简单：一条 radius-server host 就把地址和密钥都写了。dot1x authentication default group radius 指定默认走 RADIUS 认证。
+configure terminal
+aaa new-model
+radius-server host 192.168.1.30 key Radius@123
+aaa authentication dot1x default group radius
+aaa authorization network default group radius
+dot1x authentication default group radius
+end
+
+# ---- 端口开启 802.1X ----
+# 锐捷缺省的接入控制方式就是基于 MAC，选 portbased 时才需要显式配 dot1x port-method portbased。
+configure terminal
+interface range GigabitEthernet 1/0/1-8
+ dot1x
+ dot1x port-method portbased
+ dot1x port-control unauthorized-force
+ exit
+end
+
+# ---- 保存配置 ----
+end
+write
+
+# ---- 核对认证状态 ----
+# 看端口在不在跑 802.1X、有没有在线用户。
+show dot1x
+show dot1x summary
+
+# --------------------------------------------------------------------
+# [风险] 共享密钥在脚本里是明文，交付后请改用其他方式保存或立即更换。
+
+# --------------------------------------------------------------------
+# [提示] 部分 RGOS 版本的 dot1x authentication default 命令不存在，只靠 aaa authentication dot1x default group radius 也够用，下发前用 ? 确认。
+# [提示] 锐捷、思科都默认走 EAP 中继，认证方法由 RADIUS 服务器协商。
+# [提示] 选基于 MAC 还是基于端口，取决于一个端口下接几台设备：接一台用 portbased，接 HUB 或多台用 macbased。
+# [提示] 端口先要能被 RADIUS 服务器访问到，认证报文走的是交换机的管理地址。
+# [提示] 802.1X 和端口安全不能同时开，H3C 上开端口安全会重置 802.1X 配置。

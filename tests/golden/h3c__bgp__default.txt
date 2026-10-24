@@ -1,0 +1,34 @@
+# ====================================================================
+# H3C 新华三 | BGP 基础（EBGP / IBGP）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 配置 BGP 与邻居 ----
+# Comware V7 必须在 address-family ipv4 unicast 里再 peer enable 一次，只创建邻居不激活，会话建不起来。
+system-view
+bgp 65001
+ router-id 1.1.1.1
+ peer 10.0.0.2 as-number 65002
+ peer 10.0.0.3 as-number 65003
+ address-family ipv4 unicast
+  peer 10.0.0.2 enable
+  peer 10.0.0.3 enable
+  network 192.168.10.0 255.255.255.0
+  quit
+ quit
+
+# ---- 保存配置 ----
+return
+save force
+
+# ---- 核对邻居与路由 ----
+# State 要是 Established，路由表里要有你要的网段。
+system-view
+display bgp peer ipv4
+display bgp routing-table ipv4
+
+# --------------------------------------------------------------------
+# [提示] IBGP 邻居建议用 Loopback 建，并配 peer <地址> connect-interface Loopback0。
+# [提示] H3C / 华为必须进地址族视图再用 peer enable 激活邻居，光创建邻居不激活，邻居是连不上的。
+# [提示] IBGP 邻居建议用 Loopback 建，并配 connect-interface / update-source。
+# [提示] 宣告的网段要在本机路由表里存在，且掩码要写对。

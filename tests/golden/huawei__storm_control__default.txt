@@ -1,0 +1,26 @@
+# ====================================================================
+# 华为 Huawei | 广播风暴抑制
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 配置风暴控制 ----
+# 华为必须同时给低阈值和高阈值两个值，只给一个会报错；工具按「高阈值的一半」自动算低阈值。超过了只丢包、不关端口，动作是 storm control action block。
+system-view
+interface range GigabitEthernet1/0/1 to GigabitEthernet1/0/22
+ storm control broadcast min-rate percent 5 max-rate percent 10
+ storm control multicast min-rate percent 5 max-rate percent 10
+ storm control action block
+ quit
+
+# ---- 保存配置 ----
+return
+save
+
+# --------------------------------------------------------------------
+# [风险] 部分 VRP V5 版本（如早期 S5700）的命令写作 storm-control（带连字符）且单位为 min-rate / max-rate 两个纯数字，下发前请用 storm control ? 确认本机写法。
+
+# --------------------------------------------------------------------
+# [提示] 查看运行情况：display storm-control。
+# [提示] 阈值要按现场流量来定，一开始可以按百分比给一个偏保守的值，观察后再收紧。
+# [提示] 华为的百分比模式必须同时给低阈值和高阈值两个值，工具会按阈值的一半自动算低阈值。
+# [提示] 同一类型的报文不要同时配风暴抑制和接口流量阈值，会冲突。

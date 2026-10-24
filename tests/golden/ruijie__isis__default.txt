@@ -1,0 +1,49 @@
+# ====================================================================
+# 锐捷 Ruijie | IS-IS 基础
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 启用 IS-IS 并配置 NET ----
+# 锐捷与思科同源，层级关键字是 level-2-only，度量风格是 metric-style。部分 RGOS 版本的 metric-style 命令名不同，下发前用 ? 确认。
+configure terminal
+ip routing
+router isis
+ net 49.0001.0000.0000.0001.00
+ is-type level-2-only
+ metric-style wide
+ exit
+end
+
+# ---- 三层接口配置 ----
+# 接口下用 ip router isis 使能。
+configure terminal
+interface Vlan 10
+ ip router isis
+ exit
+interface Vlan 20
+ ip router isis
+ exit
+end
+
+# ---- 引入直连路由 ----
+# 把直连网段发布进 IS-IS，一般都要开。
+configure terminal
+router isis
+ redistribute connected
+ exit
+end
+
+# ---- 保存配置 ----
+end
+write
+
+# ---- 核对邻居与路由 ----
+# 先看邻接是不是 Up，再看路由表里有没有学到对端网段。
+show isis neighbors
+show ip route isis
+
+# --------------------------------------------------------------------
+# [提示] 同一台设备只能有一个 IS-IS 实例运行在 Level-2（含 Level-1-2）。
+# [提示] 同一台设备只能有一个 IS-IS 实例跑在 Level-2（含 Level-1-2）。
+# [提示] 成本风格（narrow / wide）全网必须一致，否则算出来的路径可能不对。
+# [提示] 配完记得确认 Link State PDU 里的邻接层级与预期一致。

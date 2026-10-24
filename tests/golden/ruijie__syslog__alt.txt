@@ -1,0 +1,39 @@
+# ====================================================================
+# 锐捷 Ruijie | 日志与时钟
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 配置本地日志 ----
+# service timestamps ... localtime 让日志带本地时间，没有时间戳的日志在排障时几乎用不上。锐捷默认不往 console 打日志，要开就加 logging console。
+configure terminal
+logging on
+logging buffered 512
+clock timezone UTC 8
+logging console
+end
+
+# ---- 配置日志服务器 ----
+# 只把 error 及以上级别的日志送到服务器，避免刷屏。部分 RGOS 版本的写法是 logging host，下发前用 ? 确认。
+configure terminal
+logging server 10.0.0.7
+logging trap error
+end
+
+# ---- NTP 时间同步 ----
+# 时钟不准，日志的先后顺序就不可信，NTP 要和日志一起配。
+configure terminal
+ntp server 10.0.0.5
+end
+
+# ---- 保存配置 ----
+end
+write
+
+# ---- 验证日志是否送达 ----
+# 配完在设备上制造一条日志（比如插拔一个端口），去服务器上确认收到了。
+show logging
+show clock
+
+# --------------------------------------------------------------------
+# [提示] 先把时钟对准，日志才有价值；建议同时配 NTP。
+# [提示] 日志服务器地址和数据网段要能通，配完记得验证一条日志是否送达。

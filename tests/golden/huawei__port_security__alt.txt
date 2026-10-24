@@ -1,0 +1,23 @@
+# ====================================================================
+# 华为 Huawei | 端口安全与 MAC 绑定
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 配置端口安全 ----
+# 华为的端口安全是在接口下开启的，没有全局开关。protect-action 取值 protect / restrict / shutdown。
+system-view
+interface range GigabitEthernet1/0/1 to GigabitEthernet1/0/8
+ port-security enable
+ port-security max-mac-num 3
+ port-security protect-action protect
+ quit
+
+# ---- 保存配置 ----
+return
+save
+
+# --------------------------------------------------------------------
+# [提示] 查看运行情况：display port-security；查看违例记录：display port-security intrusion。
+# [提示] 端口安全是全局开关 + 端口参数两级配置，缺一不可。
+# [提示] H3C 开启端口安全会重置端口上的 802.1X 与 MAC 认证配置，二者不能共存。
+# [提示] 开启后端口不能同时做镜像目的口、不能加入聚合组。

@@ -1,0 +1,27 @@
+# ====================================================================
+# H3C 新华三 | PoE 供电
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 配置 PoE 供电 ----
+# poe priority 决定整机供电不足时先牺牲哪些端口：critical 最后断电，low 最先断电。部分低端型号不支持 priority，下发前用 ? 确认。
+system-view
+interface range GigabitEthernet1/0/1 to GigabitEthernet1/0/8
+ poe enable
+ poe priority high
+ quit
+
+# ---- 核对供电状态 ----
+# 确认端口在供电、功率是多少，以及有没有超预算。
+system-view
+display poe interface
+display poe interface power
+
+# ---- 保存配置 ----
+return
+save force
+
+# --------------------------------------------------------------------
+# [提示] 整机 PoE 功率是有限的，优先级决定供电不足时先牺牲哪些端口。关键设备（AP、摄像头）给 high 或 critical。
+# [提示] 端口被 shutdown 时 PoE 也会断电，排查供电问题先看端口状态。
+# [提示] 万兆口、光口一般不支持 PoE，配之前先确认端口类型。

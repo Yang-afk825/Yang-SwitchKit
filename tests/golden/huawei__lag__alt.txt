@@ -1,0 +1,30 @@
+# ====================================================================
+# 华为 Huawei | 链路聚合（LACP）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 创建聚合接口 ----
+# 华为动态聚合为 mode lacp-static，静态聚合为 mode manual load-balance。
+system-view
+interface Eth-Trunk 1
+ mode manual load-balance
+ quit
+
+# ---- 成员端口加入聚合组 ----
+system-view
+interface GigabitEthernet1/0/1
+ eth-trunk 1
+ quit
+interface GigabitEthernet1/0/2
+ eth-trunk 1
+ quit
+
+# ---- 保存配置 ----
+# save 命令会提示确认，按 Y 继续。
+return
+save
+
+# --------------------------------------------------------------------
+# [提示] Eth-Trunk 配三层地址前，需先执行 undo portswitch 转为三层接口。
+# [提示] 成员口的速率、双工、VLAN 配置必须完全一致，否则无法加入聚合组。
+# [提示] 跨设备聚合需要堆叠或 M-LAG / VSU 支持，单机聚合不跨设备。
