@@ -19,17 +19,20 @@ import re
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .. import explain, registry, verify
+from .. import audit, blueprint, diagnose, diffcfg, explain, registry, rollback, verify
 from ..model import GenResult, Kind
 from ..vendors import VENDORS, generate, supports
 from . import dpi
 from . import theme as T
 
 APP_NAME = "Yang-SwitchKit"
-APP_VERSION = "V2.0.0"
+APP_VERSION = "V3.0.0"
 
 PAGE_MAIN = "一键生成配置命令"
 PAGE_DOC = "设备命令详解"
+PAGE_AUDIT = "配置体检"
+PAGE_DIFF = "配置对比"
+PAGE_DIAG = "故障排查"
 PAGE_VERIFY = "核验说明"
 PAGE_HELP = "使用说明"
 
@@ -37,6 +40,18 @@ DOC_DETAIL = "本次生成的命令详解"
 DOC_MANUAL = "该厂商命令手册"
 DOC_COMPARE = "四厂商命令对照"
 DOC_MODES = (DOC_DETAIL, DOC_MANUAL, DOC_COMPARE)
+
+#: 脚本区的三种输出视图
+MODE_CONFIG = "config"
+MODE_BLUEPRINT = "blueprint"
+MODE_ROLLBACK = "rollback"
+
+SCRIPT_MODES = (
+    (MODE_CONFIG, "配置脚本", "▌ 一键配置脚本"),
+    (MODE_BLUEPRINT, "整机开局", "▌ 整机开局脚本"),
+    (MODE_ROLLBACK, "回滚脚本", "▌ 回滚脚本"),
+)
+MODE_TITLES = {mode: title for mode, _label, title in SCRIPT_MODES}
 
 #: 脚本框里独占一行的分隔线
 RULE = "#" + "-" * 68
@@ -68,6 +83,12 @@ class App(tk.Tk):
         self.vendor_var = tk.StringVar(value=self.vendor_key)
         self.show_comment = tk.BooleanVar(value=True)
         self.doc_mode = tk.StringVar(value=DOC_DETAIL)
+        self.script_mode: str = MODE_CONFIG
+        self._last_rollback = None     # 回滚脚本的上一次推导结果，供状态栏统计
+        self._last_blueprint = None    # 整机开局的上一次编排结果
+        self.audit_source: str = ""    # 体检页粘贴的原文，切主题重建时用来回填
+        self.diff_a_source: str = ""   # 对比页 A 侧原文
+        self.diff_b_source: str = ""   # 对比页 B 侧原文
 
         self.store: dict = {}          # (厂商, 场景) -> {参数: 值}
         self.results: dict = {}        # 场景 key -> GenResult（当前厂商）
@@ -143,15 +164,24 @@ class App(tk.Tk):
 
         self.page_main = tk.Frame(self.pages, background=T.BG)
         self.page_doc = tk.Frame(self.pages, background=T.BG)
+        self.page_audit = tk.Frame(self.pages, background=T.BG)
+        self.page_diff = tk.Frame(self.pages, background=T.BG)
+        self.page_diag = tk.Frame(self.pages, background=T.BG)
         self.page_verify = tk.Frame(self.pages, background=T.BG)
         self.page_help = tk.Frame(self.pages, background=T.BG)
         self.pages.add(self.page_main, text=PAGE_MAIN)
         self.pages.add(self.page_doc, text=PAGE_DOC)
+        self.pages.add(self.page_audit, text=PAGE_AUDIT)
+        self.pages.add(self.page_diff, text=PAGE_DIFF)
+        self.pages.add(self.page_diag, text=PAGE_DIAG)
         self.pages.add(self.page_verify, text=PAGE_VERIFY)
         self.pages.add(self.page_help, text=PAGE_HELP)
 
         self._build_main_page(self.page_main)
         self._build_doc_page(self.page_doc)
+        self._build_audit_page(self.page_audit)
+        self._build_diff_page(self.page_diff)
+        self._build_diag_page(self.page_diag)
         self._build_text_page(self.page_verify, verify.render_note())
         self._build_text_page(self.page_help, self._help_lines())
 
@@ -193,25 +223,46 @@ class App(tk.Tk):
         pane = tk.Frame(parent, background=T.PANEL)
         parent.add(pane, weight=0)
         pane.columnconfigure(0, weight=1)
-        pane.rowconfigure(1, weight=1)
+        pane.rowconfigure(2, weight=1)
 
         # 标题条：参考应用左栏那个「一键配置脚本」页签
         head = tk.Frame(pane, background=T.ACCENT)
         head.grid(row=0, column=0, columnspan=2, sticky="ew")
-        ttk.Label(head, text="▌ 一键配置脚本", style="ScriptTab.TLabel").pack(side="left")
+        self.script_title = ttk.Label(
+            head, text=MODE_TITLES.get(self.script_mode, "▌ 一键配置脚本"),
+            style="ScriptTab.TLabel")
+        self.script_title.pack(side="left")
         self.script_meta = ttk.Label(head, text="", style="ScriptTab.TLabel")
         self.script_meta.pack(side="right", padx=(0, T.px(10)))
+
+        # 输出视图切换：配置脚本 / 回滚脚本
+        #
+        # 这里不用 ttk.Button —— 它的背景色由主题引擎托管，深色主题下未选中的
+        # 那个按钮会和面板底色糊在一起，整个按钮"消失"。用 tk.Label 自己画，
+        # 背景色完全可控。
+        bar = tk.Frame(pane, background=T.PANEL)
+        bar.grid(row=1, column=0, columnspan=2, sticky="ew",
+                 padx=T.px(8), pady=(T.px(6), T.px(2)))
+        self.mode_buttons = {}
+        for mode, label, _title in SCRIPT_MODES:
+            tab = tk.Label(bar, text=label, font=T.FONT_UI,
+                           padx=T.px(14), pady=T.px(6), cursor="hand2",
+                           borderwidth=0)
+            tab.pack(side="left", padx=(0, T.px(6)))
+            tab.bind("<Button-1>", lambda e, m=mode: self._set_script_mode(m))
+            self.mode_buttons[mode] = tab
+        self._paint_mode_buttons()
 
         self.out = tk.Text(pane, background=T.PANEL, foreground=T.C_CMD,
                            insertbackground=T.FG, font=T.FONT_MONO,
                            relief="flat", bd=0, wrap="none",
                            padx=T.px(12), pady=T.px(10),
                            selectbackground=T.SEL_BG, selectforeground=T.FG)
-        self.out.grid(row=1, column=0, sticky="nsew")
+        self.out.grid(row=2, column=0, sticky="nsew")
         vbar = ttk.Scrollbar(pane, orient="vertical", command=self.out.yview)
-        vbar.grid(row=1, column=1, sticky="ns")
+        vbar.grid(row=2, column=1, sticky="ns")
         hbar = ttk.Scrollbar(pane, orient="horizontal", command=self.out.xview)
-        hbar.grid(row=2, column=0, sticky="ew")
+        hbar.grid(row=3, column=0, sticky="ew")
         self.out.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
         self.out.configure(state="disabled")
 
@@ -227,7 +278,7 @@ class App(tk.Tk):
         self.out.tag_configure("err", foreground=T.C_ERR)
 
         foot = tk.Frame(pane, background=T.PANEL)
-        foot.grid(row=3, column=0, columnspan=2, sticky="ew",
+        foot.grid(row=4, column=0, columnspan=2, sticky="ew",
                   padx=T.px(10), pady=(T.px(4), T.px(10)))
         ttk.Button(foot, text="复制脚本", style="Accent.TButton",
                    command=self._copy).pack(side="left")
@@ -238,6 +289,27 @@ class App(tk.Tk):
         ttk.Checkbutton(foot, text="保留注释", variable=self.show_comment,
                         style="Card.TCheckbutton",
                         command=self._toggle_comments).pack(side="right")
+
+    def _paint_mode_buttons(self) -> None:
+        """按当前模式给两个标签按钮上色：选中的用强调色，未选中的用浅底。"""
+        for mode, tab in self.mode_buttons.items():
+            on = mode == self.script_mode
+            tab.configure(background=T.ACCENT if on else T.TAB_IDLE,
+                          foreground=T.ON_ACCENT if on else T.FG)
+
+    def _set_script_mode(self, mode: str) -> None:
+        """在「配置脚本」与「回滚脚本」之间切换。"""
+        if mode == self.script_mode:
+            return
+        self.script_mode = mode
+        self._paint_mode_buttons()
+        self.script_title.configure(text=MODE_TITLES.get(mode, "▌ 一键配置脚本"))
+        self._refresh_output(keep_scroll=False)
+        if mode == MODE_ROLLBACK:
+            self._flash("已切到回滚脚本：按逆序撤销当前脚本区的配置。"
+                        "执行前先存档现网配置，别让回滚本身也需要回滚。")
+        else:
+            self._flash("已切回配置脚本")
 
     def _toggle_comments(self) -> None:
         keep = self.show_comment.get()
@@ -481,6 +553,482 @@ class App(tk.Tk):
         self.doc.tag_configure("version", foreground=T.C_NOTE)
         self.doc.tag_configure("compare", foreground=T.C_CMT, font=T.FONT_MONO)
 
+    # ==================================================================
+    # 页面三：配置体检
+    # ==================================================================
+
+    def _build_audit_page(self, page) -> None:
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(0, weight=1)
+
+        paned = ttk.PanedWindow(page, orient="horizontal")
+        paned.grid(row=0, column=0, sticky="nsew")
+
+        # ---- 左：粘贴区 ----------------------------------------------
+        left = tk.Frame(paned, background=T.PANEL)
+        paned.add(left, weight=1)
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(1, weight=1)
+
+        head = tk.Frame(left, background=T.ACCENT)
+        head.grid(row=0, column=0, columnspan=2, sticky="ew")
+        ttk.Label(head, text="▌ 粘贴设备配置", style="ScriptTab.TLabel").pack(side="left")
+        self.audit_meta = ttk.Label(head, text="", style="ScriptTab.TLabel")
+        self.audit_meta.pack(side="right", padx=(0, T.px(10)))
+
+        self.audit_in = tk.Text(left, background=T.PANEL, foreground=T.C_CMD,
+                                insertbackground=T.FG, font=T.FONT_MONO,
+                                relief="flat", bd=0, wrap="none",
+                                padx=T.px(12), pady=T.px(10),
+                                selectbackground=T.SEL_BG, selectforeground=T.FG)
+        self.audit_in.grid(row=1, column=0, sticky="nsew")
+        vbar = ttk.Scrollbar(left, orient="vertical", command=self.audit_in.yview)
+        vbar.grid(row=1, column=1, sticky="ns")
+        hbar = ttk.Scrollbar(left, orient="horizontal", command=self.audit_in.xview)
+        hbar.grid(row=2, column=0, sticky="ew")
+        self.audit_in.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+
+        foot = tk.Frame(left, background=T.PANEL)
+        foot.grid(row=3, column=0, columnspan=2, sticky="ew",
+                  padx=T.px(10), pady=(T.px(6), T.px(10)))
+        ttk.Button(foot, text="开始体检", style="Accent.TButton",
+                   command=self._run_audit).pack(side="left")
+        ttk.Button(foot, text="清空", style="Ghost.TButton",
+                   command=self._clear_audit).pack(side="left", padx=T.px(6))
+        ttk.Label(foot, text="只解析这段文本，不连设备也不上传",
+                  style="Faint.TLabel").pack(side="right")
+
+        # ---- 右：报告区 ----------------------------------------------
+        right = tk.Frame(paned, background=T.PANEL)
+        paned.add(right, weight=1)
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+
+        rhead = tk.Frame(right, background=T.ACCENT)
+        rhead.grid(row=0, column=0, columnspan=2, sticky="ew")
+        ttk.Label(rhead, text="▌ 体检报告", style="ScriptTab.TLabel").pack(side="left")
+        self.audit_score = ttk.Label(rhead, text="", style="ScriptTab.TLabel")
+        self.audit_score.pack(side="right", padx=(0, T.px(10)))
+
+        self.audit_out = tk.Text(right, background=T.PANEL, foreground=T.FG,
+                                 insertbackground=T.FG, font=T.FONT_UI,
+                                 relief="flat", bd=0, wrap="word",
+                                 padx=T.px(16), pady=T.px(12),
+                                 selectbackground=T.SEL_BG, selectforeground=T.FG,
+                                 spacing1=T.px(1), spacing3=T.px(1))
+        self.audit_out.grid(row=1, column=0, sticky="nsew")
+        rbar = ttk.Scrollbar(right, orient="vertical", command=self.audit_out.yview)
+        rbar.grid(row=1, column=1, sticky="ns")
+        self.audit_out.configure(yscrollcommand=rbar.set, state="disabled")
+
+        self.audit_out.tag_configure("h1", foreground=T.C_HEAD,
+                                     font=("Microsoft YaHei UI", 11, "bold"),
+                                     spacing1=T.px(9), spacing3=T.px(5))
+        self.audit_out.tag_configure("title", foreground=T.FG,
+                                     font=("Microsoft YaHei UI", 10, "bold"),
+                                     spacing1=T.px(5))
+        self.audit_out.tag_configure("body", foreground=T.FG)
+        self.audit_out.tag_configure("dim", foreground=T.FG_FAINT)
+        self.audit_out.tag_configure("warn", foreground=T.C_WARN)
+        self.audit_out.tag_configure("bad", foreground=T.C_ERR)
+        self.audit_out.tag_configure("ok", foreground=T.OK)
+        self.audit_out.tag_configure("syntax", foreground=T.C_HEAD, font=T.FONT_MONO)
+
+        rfoot = tk.Frame(right, background=T.PANEL)
+        rfoot.grid(row=2, column=0, columnspan=2, sticky="ew",
+                   padx=T.px(10), pady=(T.px(6), T.px(10)))
+        ttk.Button(rfoot, text="复制报告", style="Ghost.TButton",
+                   command=self._copy_audit).pack(side="left")
+        self._last_audit = None
+        if getattr(self, "audit_source", ""):
+            # 切主题会整页重建，把用户粘过的内容放回去，别让人重粘一遍
+            self.audit_in.insert("1.0", self.audit_source)
+        self._refresh_audit()
+
+    def _run_audit(self) -> None:
+        self.audit_source = self.audit_in.get("1.0", "end").rstrip("\n")
+        report = audit.analyze(self.audit_source)
+        self._last_audit = report
+        self._refresh_audit()
+        if not report.findings:
+            self._flash("还没有内容。把设备的配置整段粘到左边，再点「开始体检」")
+            return
+        self._flash(f"体检完成：健康分 {report.score}/100，"
+                    f"高危 {len(report.high)} 项、中危 {len(report.mid)} 项")
+
+    def _clear_audit(self) -> None:
+        self.audit_in.delete("1.0", "end")
+        self.audit_source = ""
+        self._last_audit = None
+        self._refresh_audit()
+        self._flash("已清空体检内容")
+
+    def _refresh_audit(self) -> None:
+        if not hasattr(self, "audit_out"):
+            return
+        report = getattr(self, "_last_audit", None)
+        if report is None and getattr(self, "audit_source", ""):
+            report = audit.analyze(self.audit_source)
+            self._last_audit = report
+        lines = audit.render(report) if report else audit.render(audit.Report())
+
+        self.audit_out.configure(state="normal")
+        self.audit_out.delete("1.0", "end")
+        for line in lines:
+            self.audit_out.insert("end", line + "\n", self._audit_tag(line))
+        self.audit_out.configure(state="disabled")
+
+        if report and report.findings:
+            self.audit_score.configure(text=f"健康分 {report.score}")
+        else:
+            self.audit_score.configure(text="")
+
+        source_lines = len(self.audit_source.splitlines()) if getattr(
+            self, "audit_source", "") else 0
+        self.audit_meta.configure(
+            text=f"{source_lines} 行" if source_lines else "尚未粘贴")
+
+    @staticmethod
+    def _audit_tag(line: str) -> str:
+        if line.startswith("━━"):
+            return "h1"
+        if line.startswith("  ✓"):
+            return "ok"
+        if line.startswith("健康分") or line.startswith("识别为"):
+            return "title"
+        if re.match(r"^\d+\. ", line):
+            return "title"
+        if line.startswith("   证据："):
+            return "dim"
+        if line.startswith("   修复："):
+            return "warn"
+        if line.startswith("     ") and line.strip():
+            return "syntax"
+        if line.startswith("   "):
+            return "dim"
+        return "body"
+
+    def _copy_audit(self) -> None:
+        text = self.audit_out.get("1.0", "end").rstrip("\n")
+        if not text:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._flash("体检报告已复制，可直接贴进交付文档")
+
+    # ==================================================================
+    # 页面四：配置对比
+    # ==================================================================
+
+    def _diff_input(self, parent, title: str, column: int):
+        """左右各一个输入框：上面标题条、中间正文、下面行数。"""
+        box = tk.Frame(parent, background=T.PANEL)
+        box.grid(row=0, column=column, sticky="nsew",
+                 padx=T.px(4), pady=T.px(2))
+        box.columnconfigure(0, weight=1)
+        box.rowconfigure(1, weight=1)
+
+        head = tk.Frame(box, background=T.ACCENT)
+        head.grid(row=0, column=0, columnspan=2, sticky="ew")
+        ttk.Label(head, text=f"▌ {title}", style="ScriptTab.TLabel").pack(side="left")
+        meta = ttk.Label(head, text="空", style="ScriptTab.TLabel")
+        meta.pack(side="right", padx=(0, T.px(10)))
+
+        text = tk.Text(box, background=T.PANEL, foreground=T.C_CMD,
+                       insertbackground=T.FG, font=T.FONT_MONO,
+                       relief="flat", bd=0, wrap="none",
+                       padx=T.px(10), pady=T.px(8),
+                       selectbackground=T.SEL_BG, selectforeground=T.FG)
+        text.grid(row=1, column=0, sticky="nsew")
+        vbar = ttk.Scrollbar(box, orient="vertical", command=text.yview)
+        vbar.grid(row=1, column=1, sticky="ns")
+        hbar = ttk.Scrollbar(box, orient="horizontal", command=text.xview)
+        hbar.grid(row=2, column=0, sticky="ew")
+        text.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+        return text, meta
+
+    def _build_diff_page(self, page) -> None:
+        page.columnconfigure(0, weight=1)
+        # 输入区给两成七、报告区给三成 —— 差异条目比原始配置更值得占屏幕
+        page.rowconfigure(0, weight=33, uniform="v")
+        page.rowconfigure(1, weight=67, uniform="v")
+
+        # ---- 上半：两侧输入 ------------------------------------------
+        top = tk.Frame(page, background=T.BG)
+        top.grid(row=0, column=0, sticky="nsew", pady=(T.px(2), 0))
+        top.columnconfigure(0, weight=1, uniform="side")
+        top.columnconfigure(1, weight=1, uniform="side")
+        top.rowconfigure(0, weight=1)
+
+        self.diff_a, self.diff_a_meta = self._diff_input(top, "A 侧配置", 0)
+        self.diff_b, self.diff_b_meta = self._diff_input(top, "B 侧配置", 1)
+
+        bar = tk.Frame(top, background=T.BG)
+        bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, T.px(4)))
+        ttk.Button(bar, text="开始对比", style="Accent.TButton",
+                   command=self._run_diff).pack(side="left", padx=(T.px(6), 0))
+        ttk.Button(bar, text="清空", style="Ghost.TButton",
+                   command=self._clear_diff).pack(side="left", padx=T.px(6))
+        ttk.Button(bar, text="A 侧填入当前脚本区", style="Ghost.TButton",
+                   command=self._diff_from_script).pack(side="left", padx=(0, T.px(6)))
+        ttk.Label(bar, text="两侧都粘上去再点对比；顺序不同不算差异",
+                  style="Faint.TLabel").pack(side="left", padx=T.px(6))
+
+        # ---- 下半：报告 ----------------------------------------------
+        bottom = tk.Frame(page, background=T.PANEL)
+        bottom.grid(row=1, column=0, sticky="nsew", pady=(T.px(4), 0))
+        bottom.columnconfigure(0, weight=1)
+        bottom.rowconfigure(1, weight=1)
+
+        rhead = tk.Frame(bottom, background=T.ACCENT)
+        rhead.grid(row=0, column=0, columnspan=2, sticky="ew")
+        ttk.Label(rhead, text="▌ 差异报告", style="ScriptTab.TLabel").pack(side="left")
+        self.diff_score = ttk.Label(rhead, text="", style="ScriptTab.TLabel")
+        self.diff_score.pack(side="right", padx=(0, T.px(10)))
+        ttk.Button(rhead, text="复制报告", style="Ghost.TButton",
+                   command=self._copy_diff).pack(side="right", padx=(0, T.px(8)))
+
+        self.diff_out = tk.Text(bottom, background=T.PANEL, foreground=T.FG,
+                                insertbackground=T.FG, font=T.FONT_UI,
+                                relief="flat", bd=0, wrap="word",
+                                padx=T.px(16), pady=T.px(12),
+                                selectbackground=T.SEL_BG, selectforeground=T.FG,
+                                spacing1=T.px(1), spacing3=T.px(1))
+        self.diff_out.grid(row=1, column=0, sticky="nsew")
+        rbar = ttk.Scrollbar(bottom, orient="vertical", command=self.diff_out.yview)
+        rbar.grid(row=1, column=1, sticky="ns")
+        self.diff_out.configure(yscrollcommand=rbar.set, state="disabled")
+
+        self.diff_out.tag_configure("h1", foreground=T.C_HEAD,
+                                    font=("Microsoft YaHei UI", 11, "bold"),
+                                    spacing1=T.px(8), spacing3=T.px(4))
+        self.diff_out.tag_configure("title", foreground=T.FG,
+                                    font=("Microsoft YaHei UI", 10, "bold"),
+                                    spacing1=T.px(4))
+        self.diff_out.tag_configure("body", foreground=T.FG)
+        self.diff_out.tag_configure("dim", foreground=T.FG_FAINT)
+        self.diff_out.tag_configure("warn", foreground=T.C_WARN)
+        self.diff_out.tag_configure("ok", foreground=T.OK)
+        self.diff_out.tag_configure("syntax", foreground=T.C_HEAD, font=T.FONT_MONO)
+
+        self._last_diff = None
+        if self.diff_a_source:
+            self.diff_a.insert("1.0", self.diff_a_source)
+        if self.diff_b_source:
+            self.diff_b.insert("1.0", self.diff_b_source)
+        self._refresh_diff()
+
+    def _diff_from_script(self) -> None:
+        """把当前脚本区生成的配置填进 A 侧，方便和现网配置比。"""
+        text = self._script_text()
+        if not text:
+            self._flash("脚本区还是空的，先在「配置脚本」里生成一段")
+            return
+        self.diff_a.delete("1.0", "end")
+        self.diff_a.insert("1.0", text)
+        self.diff_a_source = text
+        self._refresh_diff()
+        self._flash("已把当前脚本区的配置填进 A 侧，B 侧粘贴设备上现有的配置再对比")
+
+    def _run_diff(self) -> None:
+        self.diff_a_source = self.diff_a.get("1.0", "end").rstrip("\n")
+        self.diff_b_source = self.diff_b.get("1.0", "end").rstrip("\n")
+        report = diffcfg.compare(self.diff_a_source, self.diff_b_source,
+                                 "A 侧", "B 侧")
+        self._last_diff = report
+        self._refresh_diff()
+        if not report.items and not (report.a_lines and report.b_lines):
+            self._flash("两侧都粘上配置再点对比")
+        elif not report.items:
+            self._flash("两份配置逐项一致，没有发现差异")
+        else:
+            self._flash(f"对比完成：一致度 {report.consistency * 100:.1f}%，"
+                        f"差异 {report.total} 项")
+
+    def _clear_diff(self) -> None:
+        for widget in (self.diff_a, self.diff_b):
+            widget.delete("1.0", "end")
+        self.diff_a_source = ""
+        self.diff_b_source = ""
+        self._last_diff = None
+        self._refresh_diff()
+        self._flash("已清空对比内容")
+
+    def _refresh_diff(self) -> None:
+        if not hasattr(self, "diff_out"):
+            return
+        report = getattr(self, "_last_diff", None)
+        if report is None and (self.diff_a_source or self.diff_b_source):
+            report = diffcfg.compare(self.diff_a_source, self.diff_b_source,
+                                     "A 侧", "B 侧")
+            self._last_diff = report
+        lines = diffcfg.render(report) if report else diffcfg.render(diffcfg.DiffReport())
+
+        self.diff_out.configure(state="normal")
+        self.diff_out.delete("1.0", "end")
+        for line in lines:
+            self.diff_out.insert("end", line + "\n", self._diff_tag(line))
+        self.diff_out.configure(state="disabled")
+
+        for widget, meta, source in (
+                (self.diff_a, self.diff_a_meta, self.diff_a_source),
+                (self.diff_b, self.diff_b_meta, self.diff_b_source)):
+            count = len(source.splitlines()) if source else 0
+            meta.configure(text=f"{count} 行" if count else "空")
+
+        if report and report.items:
+            self.diff_score.configure(text=f"一致度 {report.consistency * 100:.1f}%")
+        elif report and report.a_lines and report.b_lines:
+            self.diff_score.configure(text="一致度 100%")
+        else:
+            self.diff_score.configure(text="")
+
+    @staticmethod
+    def _diff_tag(line: str) -> str:
+        if line.startswith("━━"):
+            return "h1"
+        if line.startswith("  ✓"):
+            return "ok"
+        if line.startswith("· "):
+            return "title"
+        if line.startswith("    A：") or line.startswith("    B："):
+            return "syntax"
+        if line.startswith("    只有") or line.startswith("　"):
+            return "dim"
+        if line.startswith("一致度"):
+            return "title"
+        return "body"
+
+    def _copy_diff(self) -> None:
+        text = self.diff_out.get("1.0", "end").rstrip("\n")
+        if not text:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._flash("差异报告已复制")
+
+    # ==================================================================
+    # 页面五：故障排查
+    # ==================================================================
+
+    def _build_diag_page(self, page) -> None:
+        page.columnconfigure(0, minsize=T.px(210))
+        page.columnconfigure(1, weight=1)
+        page.rowconfigure(0, weight=1)
+
+        # ---- 左：现象列表 --------------------------------------------
+        left = tk.Frame(page, background=T.PANEL)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, T.px(8)))
+        left.rowconfigure(1, weight=1)
+        left.columnconfigure(0, weight=1)
+
+        head = tk.Frame(left, background=T.ACCENT)
+        head.grid(row=0, column=0, sticky="ew")
+        ttk.Label(head, text="▌ 现象", style="ScriptTab.TLabel").pack(side="left")
+
+        self.diag_list = tk.Listbox(
+            left, background=T.PANEL, foreground=T.FG,
+            selectbackground=T.SEL_BG, selectforeground=T.FG,
+            font=T.FONT_UI, relief="flat", bd=0, highlightthickness=0,
+            activestyle="none", exportselection=False)
+        self.diag_list.grid(row=1, column=0, sticky="nsew", pady=T.px(6))
+        for case in diagnose.CASES:
+            self.diag_list.insert("end", "  " + case.name)
+        self.diag_list.bind("<<ListboxSelect>>", lambda e: self._show_case())
+
+        tip = ttk.Label(left, text="选一个现象看排查步骤",
+                        style="Faint.TLabel", wraplength=T.px(190),
+                        justify="left")
+        tip.grid(row=2, column=0, sticky="w", padx=T.px(4), pady=(0, T.px(8)))
+
+        # ---- 右：排查步骤 --------------------------------------------
+        right = tk.Frame(page, background=T.PANEL)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+
+        rhead = tk.Frame(right, background=T.ACCENT)
+        rhead.grid(row=0, column=0, columnspan=2, sticky="ew")
+        ttk.Label(rhead, text="▌ 排查步骤", style="ScriptTab.TLabel").pack(side="left")
+        self.diag_meta = ttk.Label(rhead, text="", style="ScriptTab.TLabel")
+        self.diag_meta.pack(side="right", padx=(0, T.px(10)))
+        ttk.Button(rhead, text="复制步骤", style="Ghost.TButton",
+                   command=self._copy_diag).pack(side="right", padx=(0, T.px(8)))
+
+        self.diag_out = tk.Text(right, background=T.PANEL, foreground=T.FG,
+                                insertbackground=T.FG, font=T.FONT_UI,
+                                relief="flat", bd=0, wrap="word",
+                                padx=T.px(16), pady=T.px(12),
+                                selectbackground=T.SEL_BG, selectforeground=T.FG,
+                                spacing1=T.px(1), spacing3=T.px(1))
+        self.diag_out.grid(row=1, column=0, sticky="nsew")
+        dbar = ttk.Scrollbar(right, orient="vertical", command=self.diag_out.yview)
+        dbar.grid(row=1, column=1, sticky="ns")
+        self.diag_out.configure(yscrollcommand=dbar.set, state="disabled")
+
+        self.diag_out.tag_configure("h1", foreground=T.C_HEAD,
+                                    font=("Microsoft YaHei UI", 11, "bold"),
+                                    spacing1=T.px(9), spacing3=T.px(5))
+        self.diag_out.tag_configure("step", foreground=T.FG,
+                                    font=("Microsoft YaHei UI", 10, "bold"),
+                                    spacing1=T.px(7))
+        self.diag_out.tag_configure("body", foreground=T.FG)
+        self.diag_out.tag_configure("dim", foreground=T.FG_FAINT)
+        self.diag_out.tag_configure("warn", foreground=T.C_WARN)
+        self.diag_out.tag_configure("syntax", foreground=T.C_HEAD, font=T.FONT_MONO)
+
+        self.diag_list.selection_set(0)
+        self._show_case()
+
+    def _current_case(self):
+        selection = self.diag_list.curselection()
+        index = selection[0] if selection else 0
+        if index >= len(diagnose.CASES):
+            index = 0
+        return diagnose.CASES[index]
+
+    def _show_case(self) -> None:
+        case = self._current_case()
+        index = self.diag_list.curselection()
+        index = index[0] if index else 0
+        for item in range(self.diag_list.size()):
+            self.diag_list.itemconfig(
+                item,
+                background=T.SEL_BG if item == index else T.PANEL,
+                foreground=T.FG)
+        lines = diagnose.render(case, self.vendor_key)
+
+        self.diag_out.configure(state="normal")
+        self.diag_out.delete("1.0", "end")
+        for line in lines:
+            self.diag_out.insert("end", line + "\n", self._diag_tag(line))
+        self.diag_out.configure(state="disabled")
+
+        family = "Comware 系命令" if self.vendor_key in ("h3c", "huawei") else "IOS 系命令"
+        self.diag_meta.configure(text=f"{len(case.steps)} 步　·　{family}")
+
+    @staticmethod
+    def _diag_tag(line: str) -> str:
+        if line.startswith("━━"):
+            return "h1"
+        if re.match(r"^\d+\. ", line):
+            return "step"
+        if line.startswith("      ") or line.startswith("     "):
+            return "syntax"
+        if line.startswith("   "):
+            return "dim"
+        if line.startswith("现象："):
+            return "body"
+        return "body"
+
+    def _copy_diag(self) -> None:
+        text = self.diag_out.get("1.0", "end").rstrip("\n")
+        if not text:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._flash("排查步骤已复制")
+
     def _build_text_page(self, page, lines) -> None:
         page.columnconfigure(0, weight=1)
         page.rowconfigure(0, weight=1)
@@ -697,6 +1245,8 @@ class App(tk.Tk):
 
         self._refresh_output(keep_scroll=False)
         self._refresh_doc()
+        if hasattr(self, "diag_out"):
+            self._show_case()
         self._flash(f"已切换到 {vendor.name}，重新生成了 {len(self.order)} 个场景")
 
     # ==================================================================
@@ -782,17 +1332,133 @@ class App(tk.Tk):
             out.pop()
         return "\n".join(out)
 
+    def _current_text(self) -> str:
+        """脚本区当前该显示什么 —— 取决于顶部的模式选择。"""
+        if self.script_mode == MODE_ROLLBACK:
+            return self._rollback_text()
+        if self.script_mode == MODE_BLUEPRINT:
+            return self._blueprint_text()
+        return self._script_text()
+
+    def _blueprint_text(self) -> str:
+        """把已生成的场景按开局依赖顺序编排成整机脚本。"""
+        keys = self._active_keys()
+        if not keys:
+            self._last_blueprint = None
+            return ""
+
+        results = {key: self.results[key] for key in keys}
+        plan = blueprint.build(self.vendor_key, results,
+                               vendor_name=self._vendor().name)
+        self._last_blueprint = plan
+        info = blueprint.coverage(results)
+
+        cc = self._comment_char()
+        vendor = self._vendor()
+        width = 68
+        out = [
+            cc + "=" * width,
+            f"{cc} {vendor.name} · 整机开局脚本",
+            f"{cc} 按开局依赖顺序编排：{info['stages']} 个阶段 / {info['scenes']} 个场景",
+            f"{cc} 段与段可顺序整段粘贴；保存只在最后执行一次",
+            cc + "=" * width,
+        ]
+
+        # 整机脚本始终保留阶段标题 —— 那是结构，去掉就分不清哪段配什么了。
+        # 「保留注释」开关在这里只控制说明性注释与命令行里的注释。
+        keep_comment = self.show_comment.get()
+        for block in plan.blocks:
+            if block.title:
+                out.append("")
+                out.append(f"{cc} ---- {block.title} ----")
+            if block.comment and keep_comment:
+                for line in block.comment.splitlines():
+                    out.append(f"{cc} {line}")
+            for line in block.lines:
+                if not keep_comment and str(line).lstrip()[:1] in ("#", "!"):
+                    continue
+                out.append(line)
+
+        if plan.warnings:
+            out.append("")
+            for item in plan.warnings:
+                out.append(f"{cc} [风险] {item}")
+        if plan.notes:
+            out.append("")
+            for item in plan.notes:
+                out.append(f"{cc} [提示] {item}")
+        return "\n".join(out)
+
+    def _comment_char(self) -> str:
+        """注释符必须跟着厂商走：思科 / 锐捷的 # 不是注释，会被当命令执行。"""
+        return "!" if self.vendor_key in ("cisco", "ruijie") else "#"
+
+    def _rollback_text(self) -> str:
+        """把当前脚本区的配置反推成撤销脚本。"""
+        keys = self._active_keys()
+        if not keys:
+            self._last_rollback = None
+            return ""
+
+        results = [self.results[key] for key in keys]
+        undo = rollback.build(
+            self.vendor_key, results,
+            scenario_name=f"脚本区当前 {len(keys)} 个场景",
+            vendor_name=self._vendor().name)
+        self._last_rollback = undo
+
+        cc = self._comment_char()
+        vendor = self._vendor()
+        width = 68
+        out = [
+            cc + "=" * width,
+            f"{cc} {vendor.name} · 回滚脚本（撤销脚本区当前的 {len(keys)} 个场景）",
+            f"{cc} {APP_NAME} · 按配置的逆序排列，后配的先撤",
+            f"{cc} 执行前请先存档现网配置：display current-configuration / show running-config",
+            cc + "=" * width,
+        ]
+
+        body = undo.to_text(header=False, comments=self.show_comment.get())
+        if body.strip():
+            out.append("")
+            out.append(body)
+
+        if undo.warnings:
+            out.append("")
+            for item in undo.warnings:
+                out.append(f"{cc} [风险] {item}")
+        if undo.notes:
+            out.append("")
+            for item in undo.notes:
+                out.append(f"{cc} [提示] {item}")
+        return "\n".join(out)
+
     def _refresh_output(self, keep_scroll: bool = True) -> None:
-        text = self._script_text()
+        text = self._current_text()
         pos = self.out.yview()[0] if keep_scroll else 0.0
 
         self.out.configure(state="normal")
         self.out.delete("1.0", "end")
         if not text:
-            self.out.insert("end", "# 左侧是生成结果，右侧是参数。\n"
-                                   "# 填好某个场景的参数后，点它右上角的「生成脚本」，\n"
-                                   f"# 或者在右上方点「生成全部场景」一次生成 {len(registry.SCENARIOS)} 个场景。\n",
-                            "note")
+            if self.script_mode == MODE_ROLLBACK:
+                self.out.insert("end",
+                                "# 回滚脚本由左侧的生成结果反推而来。\n"
+                                "# 先在「配置脚本」里生成几段配置，再切回来就能看到对应的撤销命令。\n"
+                                "# 回滚脚本会按原配置的逆序执行，可整体复制粘贴到设备。\n",
+                                "note")
+            elif self.script_mode == MODE_BLUEPRINT:
+                self.out.insert("end",
+                                "# 整机开局脚本把已生成的场景按开局依赖顺序重新排列。\n"
+                                "# 先在「配置脚本」里生成要用的场景，再切回来就能看到编排结果。\n"
+                                "# 顺序：堆叠 -> 管理面 -> VLAN 与端口 -> 聚合 -> 生成树 -> "
+                                "网关 -> 路由 -> 安全 -> 运维。\n",
+                                "note")
+            else:
+                self.out.insert("end", "# 左侧是生成结果，右侧是参数。\n"
+                                       "# 填好某个场景的参数后，点它右上角的「生成脚本」，\n"
+                                       f"# 或者在右上方点「生成全部场景」一次生成 "
+                                       f"{len(registry.SCENARIOS)} 个场景。\n",
+                                "note")
         else:
             for line in text.splitlines():
                 self.out.insert("end", line + "\n", self._line_tag(line))
@@ -804,31 +1470,47 @@ class App(tk.Tk):
 
         keys = self._active_keys()
         total = len(registry.SCENARIOS)
-        self.script_meta.configure(text=f"{len(keys)}/{total} 个场景")
         cmd_lines = sum(len(b.lines) for k in keys for b in self.results[k].blocks)
-        self.foot_meta.configure(
-            text=f"当前厂商：{self._vendor().name}　|　已生成 {len(keys)}/{total} 个场景，"
-                 f"合计 {cmd_lines} 行命令")
+        vendor = self._vendor()
+
+        if self.script_mode == MODE_ROLLBACK:
+            undo = getattr(self, "_last_rollback", None)
+            n_lines = len(undo.blocks[0].lines) if undo and undo.blocks else 0
+            self.script_meta.configure(text=f"回滚 {n_lines} 行")
+            self.foot_meta.configure(
+                text=f"当前厂商：{vendor.name}　|　回滚脚本，撤销 {len(keys)}/{total} 个场景"
+                     f"（原配置合计 {cmd_lines} 行命令）")
+        elif self.script_mode == MODE_BLUEPRINT:
+            plan = getattr(self, "_last_blueprint", None)
+            n_lines = sum(len(b.lines) for b in plan.blocks) if plan else 0
+            info = blueprint.coverage({k: self.results[k] for k in keys}) if keys else None
+            stages = info["stages"] if info else 0
+            self.script_meta.configure(text=f"{stages} 个阶段")
+            self.foot_meta.configure(
+                text=f"当前厂商：{vendor.name}　|　整机开局：{stages} 个阶段 / "
+                     f"{len(keys)} 个场景，合计 {n_lines} 行")
+        else:
+            self.script_meta.configure(text=f"{len(keys)}/{total} 个场景")
+            self.foot_meta.configure(
+                text=f"当前厂商：{vendor.name}　|　已生成 {len(keys)}/{total} 个场景，"
+                     f"合计 {cmd_lines} 行命令")
         self._set_status()
 
     @staticmethod
     def _line_tag(line: str) -> str:
-        if line.startswith("!") or line.startswith("#!"):
-            # 思科 / 锐捷的 ! 也是注释，跟 # 一样按注释上色
-            return "cmt"
-        if line.startswith("#===") or line.startswith("#---"):
+        text = line.lstrip()
+        if not text or text[0] not in ("#", "!"):
+            return "cmd"
+        rest = text[1:]
+        if rest.startswith((" [风险]", " [未生成]", " [近似]", " [人工确认]", " 说明：")):
+            return "warn"
+        if rest.startswith(("===", "---")):
             return "sep"
-        if line.startswith("# 【"):
+        if rest.startswith(" 【"):
             return "head"
-        if line.startswith("# ----"):
+        if rest.startswith(" ---- "):
             return "sub"
-        if line.startswith("# [风险]") or line.startswith("# [未生成]"):
-            return "warn"
-        if line.startswith("# 说明："):
-            return "warn"
-        if line.startswith("#"):
-            return "cmt"
-        return "cmd"
+        return "cmt"
 
     # ==================================================================
     # 渲染：详解页
@@ -917,13 +1599,16 @@ class App(tk.Tk):
     # ==================================================================
 
     def _copy(self) -> None:
-        text = self._script_text()
+        text = self._current_text()
         if not text:
             self._flash("脚本区还是空的，先生成一段吧")
             return
         self.clipboard_clear()
         self.clipboard_append(text)
-        self._flash("脚本已复制到剪贴板，可直接粘贴到设备终端")
+        if self.script_mode == MODE_ROLLBACK:
+            self._flash("回滚脚本已复制。下发前确认已存档现网配置")
+        else:
+            self._flash("脚本已复制到剪贴板，可直接粘贴到设备终端")
 
     def _copy_doc(self) -> None:
         text = self.doc.get("1.0", "end").rstrip("\n")
@@ -934,13 +1619,14 @@ class App(tk.Tk):
         self.doc_meta.configure(text="详解已复制到剪贴板")
 
     def _export(self) -> None:
-        text = self._script_text()
+        text = self._current_text()
         if not text:
             self._flash("脚本区还是空的，没有可导出的内容")
             return
-        default = f"{self._vendor().name.split()[0]}_一键配置脚本.txt"
+        suffix = "回滚脚本" if self.script_mode == MODE_ROLLBACK else "一键配置脚本"
+        default = f"{self._vendor().name.split()[0]}_{suffix}.txt"
         path = filedialog.asksaveasfilename(
-            title="导出配置脚本",
+            title=f"导出{suffix}",
             defaultextension=".txt",
             initialfile=default,
             filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
@@ -1017,6 +1703,109 @@ class App(tk.Tk):
             "每个厂商的参数是分开保存的，来回切换厂商不会把填好的值冲掉；",
             "已经生成过的场景，切换厂商后会自动按新厂商重算一遍。",
             "",
+            "━━ 一整套开局怎么串：整机开局 ━━",
+            "",
+            "单独生成 29 段命令，粘的时候顺序错了是要出问题的：",
+            "先配接口再建 VLAN，H3C 会直接告诉你 VLAN 不存在；",
+            "先配生成树再配聚合，根桥位置就是错的。",
+            "",
+            "「整机开局」把已经生成的场景按真实依赖顺序重新排列：",
+            "",
+            "  堆叠 → 管理面 → VLAN 与端口 → 聚合 → 生成树",
+            "       → 网关 → 路由 → 安全 → 运维 → 保存",
+            "",
+            "几处硬约束是有意这么排的：堆叠会重启设备所以放最前；",
+            "管理面先于业务，否则中途失联就回不来了；聚合先于生成树，",
+            "否则两条链路会被当成环路。",
+            "",
+            "干净的段落只保留一条 system-view，保存动作也只在最后出现一次；",
+            "没生成的阶段会跳过，但管理面和 VLAN 这两段缺失会直接报风险 ——",
+            "少了它们，开局后的设备是登不上去的。",
+            "",
+            "━━ 接手一台设备先做什么：配置体检 ━━",
+            "",
+            "「配置体检」页是把设备上 display current-configuration（思科/锐捷用",
+            "show running-config）的输出整段粘进去，工具跑一遍规则，给出一份",
+            "「风险 / 通过」报告和健康分，每条风险附上可直接用的修复命令。",
+            "",
+            "体检覆盖：远程管理面（Telnet、HTTP、SSH）、SNMP 团体字与版本、",
+            "口令是否明文保存、NTP 与日志外送、VLAN 1 的用法、生成树边缘端口、",
+            "闲置端口是否关闭、认证方式、DHCP Snooping 与风暴抑制。",
+            "",
+            "两个要留意的地方：",
+            "",
+            "· 工具会自动识别厂商，不用你选。",
+            "· 如果粘的配置不足 40 行，报告会提示「配置可能不完整」，",
+            "  并把「没查到」类的结论降级 —— 片段里没看到 NTP，不等于设备没配。",
+            "",
+            "体检只读这段文本，不连设备、不上传，结论仅代表配置本身。",
+            "分数用来横向比对多台设备，不是测评结论。",
+            "",
+            "━━ 两台设备对不对得上：配置对比 ━━",
+            "",
+            "「配置对比」页左右各粘一份配置，比的是「同一件事两边写得一样不一样」。",
+            "",
+            "不是文本 diff —— 那种比对会被启动时间、保存时间、命令顺序这些噪声淹掉。",
+            "这里先把配置展平成「路径 -> 取值」再比，所以：",
+            "",
+            "  · 命令顺序不同，不算差异",
+            "  · port trunk permit vlan 10 20 和 10 20 30 会报「取值不同」，",
+            "    而不是报成两条互不相关的配置",
+            "  · 设备名、管理地址、堆叠优先级这类天生该不一样的东西，",
+            "    单独归到「预期差异」，不干扰你判断",
+            "",
+            "典型用法：IRF / VSU / 堆叠双机核对主备是否一致；变更前后存档对比；",
+            "接手别人的网络时，看两台设备为什么表现不一样。",
+            "",
+            "想拿自己生成的配置和现网比，点「A 侧填入当前脚本区」即可。",
+            "",
+            "━━ 排障时不知道该敲什么：故障排查 ━━",
+            "",
+            "「故障排查」页不是生成配置，是回答「现象是这样，接下来查什么」。",
+            "",
+            "左边选现象，右边给步骤。每一步写三件事：查什么、用什么命令、",
+            "结果怎么判读，以及判读之后该往哪走 —— 而不是一句「检查配置是否正确」。",
+            "",
+            "目前覆盖六个最常见、也最容易查偏的现象：",
+            "",
+            "  VLAN 间不通 · 链路聚合起不来 · STP 震荡卡顿",
+            "  终端拿不到 IP · OSPF 邻居起不来 · 端口 UP 但业务不通",
+            "",
+            "命令跟着当前厂商走：H3C / 华为给 display，思科 / 锐捷给 show。",
+            "每个案例末尾还列了几个「看起来像同一个问题、其实不是」的坑，",
+            "那些地方最容易白查半天。",
+            "",
+            "━━ 配错了怎么办：回滚脚本 ━━",
+            "",
+            "脚本区上方有「配置脚本 / 回滚脚本」两个切换按钮。",
+            "切到「回滚脚本」，工具会把你当前脚本区里的配置反推成一份撤销脚本，",
+            "按逆序排列 —— 后配的先撤，最后一条是保存。",
+            "",
+            "哪些能放心撤、哪些要自己看一眼，脚本里标得很清楚：",
+            "",
+            "· 没有任何标记的：撤销写法是确定的，可以直接执行。",
+            "· 标了 [近似] 的：撤销后回到设备默认值，可能和你原来的配置不一样。",
+            "  典型的是 trunk / access 模式这类「改之前是什么」工具没法知道的命令。",
+            "· 标了 [人工确认] 的：工具推导不出撤销写法，比如 vpn-target、snmp 的",
+            "  target-host。这些行本身是注释、设备不会执行，留给你手工处理。",
+            "",
+            "回滚脚本的注释符会跟着厂商变：H3C / 华为用 #，思科 / 锐捷用 !。",
+            "这一点很重要 —— 思科的 # 不是注释符，混进脚本会被当成命令执行。",
+            "",
+            "执行回滚之前，务必先存档一份现网配置。",
+            "",
+            "━━ 手边只有手机 / 电脑不让装 exe ━━",
+            "",
+            "同一套命令库还导出了一份单文件网页：Yang-SwitchKit-Web.html。",
+            "双击用浏览器打开就能看，不用安装任何东西，Mac 和手机也能用。",
+            "",
+            "网页版里有：29 个场景的四厂商命令示例、逐条命令详解、",
+            "四厂商对照、故障排查步骤。命令内容和这个 exe 完全同源 ——",
+            "都是同一个命令库导出的，不存在「网页对、exe 错」这种事。",
+            "",
+            "但要清楚它的边界：**网页版只做查阅，不做参数化生成**。",
+            "要按自己的 VLAN 号、端口号生成命令，还是用这个 exe。",
+            "",
             "━━ 命令是怎么保证正确的 ━━",
             "",
             "命令不是凭印象写的，是逐条对着各厂商官方命令手册核对的。",
@@ -1046,6 +1835,9 @@ class App(tk.Tk):
             f"交换机配置命令一键生成　{APP_VERSION}\n\n"
             f"覆盖 思科 / 华为 / H3C / 锐捷 四厂商，{len(registry.SCENARIOS)} 个高频配置场景，\n"
             "一键生成配置脚本，同时给出逐条设备命令详解与四厂商命令对照。\n\n"
+            "每一段生成的配置都能反推出一份回滚脚本：按逆序撤销，\n"
+            "并在撤销写法不确定的地方明确标注 [近似] 与 [人工确认]，\n"
+            "不假装每条命令都能精确撤回。\n\n"
             "命令以各厂商官方命令手册为准逐条核对；\n"
             "凡随软件版本变化的命令，均在结果中标注版本差异，\n"
             "不假装四家、各版本都能通用。\n\n"
@@ -1055,9 +1847,20 @@ class App(tk.Tk):
 
     def _toggle_theme(self) -> None:
         """浅色 / 深色互换。颜色是控件创建时读的，所以整页重建一次。"""
+        # 重建会把 Notebook 打回第一页，先记住用户停在哪一页
+        try:
+            current = self.pages.index(self.pages.select())
+        except Exception:  # noqa: BLE001
+            current = 0
+
         self.dark = not self.dark
         T.apply(self, self.scale, self.dark)
         self._build_all()
+
+        try:
+            self.pages.select(current)
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------------
     # 滚动与折行

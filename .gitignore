@@ -18,7 +18,12 @@ dist/
 # ---- 开发自检产物（截图、临时预览图）----
 _preview/
 _shots/
+_dump/
+_webcheck.js
 *.log
+
+# ---- 临时脚本（下划线开头，用完即弃）----
+tools/_*.py
 
 # ---- 编辑器 / 系统 ----
 .vscode/

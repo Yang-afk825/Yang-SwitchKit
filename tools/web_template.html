@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Yang-SwitchKit · 交换机配置速查</title>
+<style>
+:root{
+  --bg:#f5f6f8; --panel:#fff; --border:#e2e5ea; --border-soft:#eceef2;
+  --fg:#1e2228; --dim:#59616e; --faint:#8b93a1;
+  --accent:#2f6fd8; --on-accent:#fff; --sel:#eaf1fd;
+  --syntax:#1a4f9c; --cmt:#5f7d5f; --warn:#a8422f;
+  --mono:ui-monospace,"Cascadia Code",Consolas,"Courier New",monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#16181c; --panel:#1d2026; --border:#2b3038; --border-soft:#242830;
+    --fg:#e5e7eb; --dim:#9aa2af; --faint:#6e7683;
+    --accent:#5b9bf8; --on-accent:#0f1216; --sel:#243043;
+    --syntax:#7fa9f0; --cmt:#7ea87e; --warn:#e0a35c;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--fg);
+  font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei UI",sans-serif;
+  -webkit-text-size-adjust:100%;
+}
+header{
+  background:var(--panel); border-bottom:1px solid var(--border);
+  padding:12px 16px; display:flex; align-items:center; gap:12px;
+  position:sticky; top:0; z-index:10;
+}
+header .bar{width:4px;height:30px;background:var(--accent);border-radius:2px;flex:none}
+header>div{min-width:0}
+header p{overflow-wrap:anywhere}
+header h1{margin:0;font-size:16px;font-weight:600;letter-spacing:.2px}
+header p{margin:2px 0 0;font-size:12px;color:var(--faint)}
+nav{
+  display:flex; gap:6px; padding:10px 16px; background:var(--panel);
+  border-bottom:1px solid var(--border); overflow-x:auto; position:sticky; top:55px; z-index:9;
+}
+nav button{
+  flex:none; border:1px solid transparent; background:transparent; color:var(--dim);
+  padding:7px 14px; border-radius:8px; font-size:13px; cursor:pointer;
+  font-family:inherit; white-space:nowrap;
+}
+nav button:hover{background:var(--border-soft);color:var(--fg)}
+nav button.on{background:var(--accent);color:var(--on-accent);font-weight:500}
+main{padding:14px 16px 40px;max-width:1180px;margin:0 auto}
+.layout{display:grid;grid-template-columns:232px minmax(0,1fr);gap:14px;align-items:start}
+.layout>*{min-width:0}
+aside{
+  background:var(--panel); border:1px solid var(--border); border-radius:12px;
+  padding:8px; max-height:calc(100vh - 170px); overflow:auto;
+}
+aside .group{
+  font-size:11px;color:var(--faint);padding:10px 10px 4px;letter-spacing:.5px;
+}
+aside button{
+  display:block; width:100%; text-align:left; border:0; background:transparent;
+  color:var(--dim); padding:8px 10px; border-radius:8px; font-size:13px;
+  cursor:pointer; font-family:inherit; line-height:1.4;
+}
+aside button:hover{background:var(--border-soft);color:var(--fg)}
+aside button.on{background:var(--sel);color:var(--accent);font-weight:500}
+.card{
+  background:var(--panel); border:1px solid var(--border); border-radius:12px;
+  padding:16px; margin-bottom:12px; min-width:0;
+}
+.card h2{margin:0 0 4px;font-size:15px;font-weight:600}
+.card .meta{font-size:12px;color:var(--faint);margin-bottom:10px}
+.card .sum{color:var(--dim);font-size:13px;margin:6px 0 12px}
+.notes{margin:0 0 12px;padding-left:18px;color:var(--dim);font-size:12.5px}
+.notes li{margin:3px 0}
+.params{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;margin-bottom:14px}
+.param{border:1px solid var(--border-soft);border-radius:8px;padding:7px 9px;background:var(--bg)}
+.param .k{font-size:11px;color:var(--faint)}
+.param .v{font-family:var(--mono);font-size:12.5px;color:var(--syntax);word-break:break-all}
+.seg{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.seg button{
+  border:1px solid var(--border);background:var(--bg);color:var(--dim);
+  padding:5px 12px;border-radius:7px;font-size:12.5px;cursor:pointer;font-family:inherit;
+}
+.seg button.on{background:var(--sel);border-color:var(--accent);color:var(--accent);font-weight:500}
+pre{
+  margin:0; padding:12px 14px; background:var(--bg); border:1px solid var(--border-soft);
+  border-radius:8px; font-family:var(--mono); font-size:12.5px; line-height:1.55;
+  overflow:auto; white-space:pre; tab-size:4; min-width:0; max-width:100%;
+}
+pre .c{color:var(--cmt)}
+pre .w{color:var(--warn)}
+.row{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;min-width:0}
+.row .sp{flex:1}
+.btn{
+  border:1px solid var(--border);background:var(--panel);color:var(--dim);
+  padding:6px 12px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit;
+}
+.btn:hover{color:var(--fg);border-color:var(--accent)}
+.btn.primary{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.hint{color:var(--faint);font-size:12px;overflow-wrap:anywhere}
+footer{
+  color:var(--faint);font-size:12px;text-align:center;padding:20px 16px 30px;
+  line-height:1.8;
+}
+footer code{font-family:var(--mono);color:var(--dim)}
+@media (max-width:760px){
+  .layout{grid-template-columns:minmax(0,1fr)}
+  aside{max-height:none;display:flex;overflow-x:auto;gap:4px;padding:8px}
+  aside .group{display:none}
+  aside button{width:auto;white-space:nowrap;flex:none}
+  main{padding:10px 10px 30px}
+  .params{grid-template-columns:minmax(0,1fr)}
+  .card{padding:13px}
+  nav{top:52px}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar"></div>
+  <div>
+    <h1>Yang-SwitchKit</h1>
+    <p>交换机配置速查 · 思科 / 华为 / H3C / 锐捷 · <span id="ver"></span></p>
+  </div>
+</header>
+
+<nav id="tabs">
+  <button data-view="gen" class="on">生成命令</button>
+  <button data-view="doc">命令详解</button>
+  <button data-view="cmp">四厂商对照</button>
+  <button data-view="diag">故障排查</button>
+</nav>
+
+<main>
+  <section id="view-gen">
+    <div class="layout">
+      <aside id="scene-list"></aside>
+      <div id="scene-detail"></div>
+    </div>
+  </section>
+
+  <section id="view-doc" hidden>
+    <div class="card">
+      <div class="row">
+        <div class="seg" id="doc-vendors"></div>
+        <div class="sp"></div>
+        <button class="btn" id="doc-copy">复制</button>
+      </div>
+      <pre id="doc-body"></pre>
+    </div>
+  </section>
+
+  <section id="view-cmp" hidden>
+    <div class="card">
+      <div class="row">
+        <span class="hint">同一件事在四家分别怎么写，横向记比竖着背有效。</span>
+        <div class="sp"></div>
+        <button class="btn" id="cmp-copy">复制</button>
+      </div>
+      <pre id="cmp-body"></pre>
+    </div>
+  </section>
+
+  <section id="view-diag" hidden>
+    <div class="layout">
+      <aside id="case-list"></aside>
+      <div id="case-detail"></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  命令与桌面版 Yang-SwitchKit 同源导出，逐字一致。<br>
+  网页版只做查阅与演示，<strong>配置请以桌面版生成后再核对</strong>。<br>
+  <code>小阳的赛博日记</code>
+</footer>
+
+<script>const DATA=/*__DATA__*/;</script>
+<script>
+(function(){
+  "use strict";
+  var $ = function(id){ return document.getElementById(id); };
+  var VENDOR_FAMILY = {h3c:"h3c", huawei:"h3c", cisco:"cisco", ruijie:"cisco"};
+
+  $("ver").textContent = DATA.version;
+
+  /* ---------------- 通用 ---------------- */
+  function copyText(text, btn){
+    var done = function(){
+      var old = btn.textContent; btn.textContent = "已复制";
+      setTimeout(function(){ btn.textContent = old; }, 1400);
+    };
+    if (navigator.clipboard && window.isSecureContext){
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+    function fallback(){
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch(e){ alert("复制失败，请手动选择文本"); }
+      document.body.removeChild(ta);
+    }
+  }
+
+  // 注释行单独上色：H3C/华为用 #，思科/锐捷用 !
+  function paint(text){
+    return text.split("\n").map(function(line){
+      var t = line.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+      var s = line.replace(/^\s+/,"");
+      if (s.charAt(0) === "#" || s.charAt(0) === "!"){
+        var cls = /\[(风险|未生成|近似|人工确认)\]|说明：/.test(line) ? "w" : "c";
+        return '<span class="' + cls + '">' + t + "</span>";
+      }
+      return t;
+    }).join("\n");
+  }
+
+  function stripComments(text, vendor){
+    var ch = (vendor === "cisco" || vendor === "ruijie") ? "!" : "#";
+    return text.split("\n").filter(function(line){
+      var s = line.replace(/^\s+/,"");
+      return s && s.charAt(0) !== ch;
+    }).join("\n");
+  }
+
+  /* ---------------- 标签页 ---------------- */
+  var views = ["gen","doc","cmp","diag"];
+
+  function switchView(name){
+    if (views.indexOf(name) < 0) name = "gen";
+    views.forEach(function(v){ $("view-" + v).hidden = (v !== name); });
+    document.querySelectorAll("#tabs button").forEach(function(b){
+      b.classList.toggle("on", b.dataset.view === name);
+    });
+    try {
+      if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+    } catch (e) { /* file:// 下个别浏览器会拒绝，忽略即可 */ }
+  }
+
+  document.querySelectorAll("#tabs button").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      switchView(btn.dataset.view);
+      window.scrollTo(0, 0);
+    });
+  });
+
+  window.addEventListener("hashchange", function(){
+    switchView(location.hash.replace("#", ""));
+  });
+
+  /* ---------------- 生成命令 ---------------- */
+  var state = { scene: DATA.scenarios[0].key, sample: 0, vendor: DATA.vendors[0].key };
+
+  function buildSceneList(){
+    var box = $("scene-list");
+    var groups = {};
+    DATA.scenarios.forEach(function(s){
+      (groups[s.group] = groups[s.group] || []).push(s);
+    });
+    Object.keys(groups).forEach(function(g){
+      var head = document.createElement("div");
+      head.className = "group"; head.textContent = g;
+      box.appendChild(head);
+      groups[g].forEach(function(s){
+        var b = document.createElement("button");
+        b.textContent = s.name; b.dataset.key = s.key;
+        if (s.key === state.scene) b.classList.add("on");
+        b.addEventListener("click", function(){
+          state.scene = s.key; state.sample = 0;
+          box.querySelectorAll("button").forEach(function(x){ x.classList.remove("on"); });
+          b.classList.add("on");
+          renderScene();
+        });
+        box.appendChild(b);
+      });
+    });
+  }
+
+  function currentScene(){
+    return DATA.scenarios.filter(function(s){ return s.key === state.scene; })[0];
+  }
+
+  function renderScene(){
+    var s = currentScene();
+    if (!s) return;
+    if (state.sample >= s.samples.length) state.sample = 0;
+    var sample = s.samples[state.sample];
+    var vendor = DATA.vendors.filter(function(v){ return v.key === state.vendor; })[0] || DATA.vendors[0];
+
+    var html = '<div class="card">';
+    html += '<h2>' + s.name + "</h2>";
+    html += '<div class="meta">' + s.group + "　|　" + s.versions + "</div>";
+    html += '<div class="sum">' + s.summary + "</div>";
+
+    if (s.notes.length){
+      html += '<ul class="notes">';
+      s.notes.forEach(function(n){ html += "<li>" + n + "</li>"; });
+      html += "</ul>";
+    }
+
+    html += '<div class="params">';
+    s.params.forEach(function(p){
+      var val = sample.values[p.label] !== undefined ? sample.values[p.label] : "";
+      html += '<div class="param"><div class="k">' + p.label + '</div><div class="v">' +
+              (val || p.example || "—") + "</div></div>";
+    });
+    html += "</div>";
+
+    if (s.samples.length > 1){
+      html += '<div class="seg" id="sample-seg">';
+      s.samples.forEach(function(sm, i){
+        html += '<button data-i="' + i + '" class="' + (i === state.sample ? "on" : "") + '">' +
+                sm.label + "</button>";
+      });
+      html += "</div>";
+    }
+
+    html += '<div class="seg" id="vendor-seg">';
+    DATA.vendors.forEach(function(v){
+      html += '<button data-v="' + v.key + '" class="' + (v.key === vendor.key ? "on" : "") + '">' +
+              v.name + "</button>";
+    });
+    html += "</div>";
+
+    html += '<div class="row"><span class="hint">' + vendor.platform +
+            "　接口写法：" + vendor.port_hint + "</span></div>";
+    html += '<pre id="cmd-body">' + paint(sample.commands[vendor.key] || "") + "</pre>";
+    html += '<div class="row" style="margin-top:10px">';
+    html += '<button class="btn primary" id="copy-all">复制（含注释）</button>';
+    html += '<button class="btn" id="copy-plain">复制纯命令</button>';
+    html += '<span class="hint">纯命令可直接粘到设备</span></div>';
+    html += "</div>";
+
+    $("scene-detail").innerHTML = html;
+
+    var sseg = $("sample-seg");
+    if (sseg){
+      sseg.querySelectorAll("button").forEach(function(b){
+        b.addEventListener("click", function(){
+          state.sample = +b.dataset.i; renderScene();
+        });
+      });
+    }
+    $("vendor-seg").querySelectorAll("button").forEach(function(b){
+      b.addEventListener("click", function(){
+        state.vendor = b.dataset.v; renderScene();
+      });
+    });
+    $("copy-all").addEventListener("click", function(){
+      copyText(sample.commands[vendor.key] || "", this);
+    });
+    $("copy-plain").addEventListener("click", function(){
+      copyText(stripComments(sample.commands[vendor.key] || "", vendor.key), this);
+    });
+  }
+
+  /* ---------------- 命令详解 ---------------- */
+  var docVendor = DATA.vendors[0].key;
+  function buildDocVendors(){
+    var box = $("doc-vendors");
+    DATA.vendors.forEach(function(v){
+      var b = document.createElement("button");
+      b.textContent = v.name; b.dataset.v = v.key;
+      if (v.key === docVendor) b.classList.add("on");
+      b.addEventListener("click", function(){
+        docVendor = v.key;
+        box.querySelectorAll("button").forEach(function(x){ x.classList.remove("on"); });
+        b.classList.add("on");
+        renderDoc();
+      });
+      box.appendChild(b);
+    });
+  }
+  function renderDoc(){
+    $("doc-body").innerHTML = paint((DATA.manuals[docVendor] || []).join("\n"));
+  }
+
+  /* ---------------- 对照 ---------------- */
+  function renderCompare(){
+    $("cmp-body").innerHTML = paint(DATA.compare.join("\n"));
+  }
+
+  /* ---------------- 故障排查 ---------------- */
+  var caseKey = DATA.diagnose[0] ? DATA.diagnose[0].key : "";
+  function buildCaseList(){
+    var box = $("case-list");
+    DATA.diagnose.forEach(function(c){
+      var b = document.createElement("button");
+      b.textContent = c.name; b.dataset.k = c.key;
+      if (c.key === caseKey) b.classList.add("on");
+      b.addEventListener("click", function(){
+        caseKey = c.key;
+        box.querySelectorAll("button").forEach(function(x){ x.classList.remove("on"); });
+        b.classList.add("on");
+        renderCase();
+      });
+      box.appendChild(b);
+    });
+  }
+  function renderCase(){
+    var c = DATA.diagnose.filter(function(x){ return x.key === caseKey; })[0];
+    if (!c) return;
+    var family = VENDOR_FAMILY[state.vendor] || "h3c";
+    var lines = c.steps[family] || c.steps.h3c || [];
+    var html = '<div class="card">';
+    html += "<h2>" + c.name + "</h2>";
+    html += '<div class="sum">现象：' + c.symptom + "</div>";
+    html += '<div class="seg" id="diag-vendor">';
+    html += '<button data-f="h3c" class="' + (family === "h3c" ? "on" : "") + '">H3C / 华为</button>';
+    html += '<button data-f="cisco" class="' + (family === "cisco" ? "on" : "") + '">思科 / 锐捷</button>';
+    html += "</div>";
+    html += '<pre id="case-body">' + paint(lines.join("\n")) + "</pre>";
+    html += '<div class="row" style="margin-top:10px"><button class="btn" id="case-copy">复制步骤</button></div>';
+    html += "</div>";
+    $("case-detail").innerHTML = html;
+
+    $("diag-vendor").querySelectorAll("button").forEach(function(b){
+      b.addEventListener("click", function(){
+        var f = b.dataset.f;
+        $("diag-vendor").querySelectorAll("button").forEach(function(x){ x.classList.remove("on"); });
+        b.classList.add("on");
+        $("case-body").innerHTML = paint((c.steps[f] || []).join("\n"));
+      });
+    });
+    $("case-copy").addEventListener("click", function(){
+      copyText(lines.join("\n"), this);
+    });
+  }
+
+  $("doc-copy").addEventListener("click", function(){
+    copyText((DATA.manuals[docVendor] || []).join("\n"), this);
+  });
+  $("cmp-copy").addEventListener("click", function(){
+    copyText(DATA.compare.join("\n"), this);
+  });
+
+  switchView(location.hash.replace("#", "") || "gen");
+
+  buildSceneList();
+  renderScene();
+  buildDocVendors();
+  renderDoc();
+  renderCompare();
+  buildCaseList();
+  renderCase();
+})();
+</script>
+</body>
+</html>
