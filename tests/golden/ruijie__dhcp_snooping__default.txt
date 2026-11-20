@@ -1,0 +1,32 @@
+# ====================================================================
+# 锐捷 Ruijie | DHCP Snooping
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 开启 DHCP Snooping ----
+# ip dhcp snooping 是总开关，再按 VLAN 打开。默认会校验请求报文里的客户端 MAC 与源 MAC 是否一致，本工具按勾选情况生成。
+configure terminal
+ip dhcp snooping
+ip dhcp snooping vlan 10,20
+end
+
+# ---- 指定信任端口 ----
+# 只有信任端口上收到的 DHCP 应答才会被转发，其余一律丢弃。
+configure terminal
+interface GigabitEthernet 1/0/24
+ ip dhcp snooping trust
+ exit
+end
+
+# ---- 保存配置 ----
+end
+write
+
+# ---- 查看绑定表 ----
+# 绑定表是动态 ARP 检测和 IP 源防护的判断依据。
+show ip dhcp snooping binding
+
+# --------------------------------------------------------------------
+# [提示] 锐捷与思科的 DHCP Snooping 命令基本一致，这也是 RGOS 与 IOS 同源的体现。
+# [提示] 只开 Snooping 不指定信任口，等于把所有 DHCP 应答都丢掉，配置要一次到位。
+# [提示] DHCP Snooping 的绑定表是后续 IP Source Guard、动态 ARP 检测的基础。

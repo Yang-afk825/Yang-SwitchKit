@@ -1,0 +1,33 @@
+# ====================================================================
+# 锐捷 Ruijie | 端口限速（QoS）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 定义限速策略 ----
+# police cir 单位是 bps，所以 10000 kbps 换算成 10000000 bps。没填 CBS 时，工具按「CIR × 200ms」估算了一个经验值，请按现场情况调整。
+configure terminal
+policy-map SCG-RATE-10000K
+ class class-default
+  police cir 10000000 cbs 250000
+  exit
+ exit
+end
+
+# ---- 在端口上应用策略 ----
+# 入方向限的是用户上传，出方向限的是用户下载。
+configure terminal
+interface range GigabitEthernet 1/0/1-8
+ service-policy inbound SCG-RATE-10000K
+ exit
+end
+write
+
+# ---- 核对限速结果 ----
+# 看有没有命中计数，计数为 0 说明策略没生效。
+show policy-map interface | include SCG-RATE-10000K
+
+# --------------------------------------------------------------------
+# [提示] 锐捷也可以用 rate-limit input <bps> <突发> 直接在接口下限速，不同版本参数个数不一样，本工具没生成，需要时请用 ? 确认。
+# [提示] CBS 太小会让 TCP 吞吐骤降，太大会失去限速意义；10 Mbps 限速可取 200000 字节。
+# [提示] 入方向限的是用户上传，出方向限的是用户下载，按需求选对方向。
+# [提示] 思科 / 锐捷的限速走 QoS 策略，需要先建 class-map，工具已一并生成。

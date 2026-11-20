@@ -1,0 +1,30 @@
+# ====================================================================
+# H3C 新华三 | ARP 防护与 IP 源防护
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 开启 ARP 检测 ----
+# arp detection validate 校验 ARP 报文的 MAC 与 IP 是否自相矛盾，能挡住大部分 ARP 欺骗。
+system-view
+vlan 10
+ arp detection enable
+ quit
+vlan 20
+ arp detection enable
+ quit
+
+# ---- 指定信任端口 ----
+# 上行口必须设为信任口，否则来自网关的正常 ARP 也会被丢弃。
+system-view
+interface GigabitEthernet1/0/24
+ arp detection trust
+ quit
+
+# ---- 保存配置 ----
+return
+save force
+
+# --------------------------------------------------------------------
+# [提示] ARP 防护要配合 DHCP Snooping 用，绑定表是它的判断依据，建议先配那一条。
+# [提示] 上行口一定要设为信任口，否则正常报文也会被拦。
+# [提示] 静态 IP+MAC 绑定命令各家、各型号差异很大，本工具不生成，请对照本机手册单独配置。

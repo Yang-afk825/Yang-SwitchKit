@@ -1,0 +1,37 @@
+# ====================================================================
+# H3C 新华三 | 链路聚合（LACP）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 创建聚合接口 ----
+# 三层聚合用 Route-Aggregation，二层聚合用 Bridge-Aggregation，注意区分。
+system-view
+interface Bridge-Aggregation 1
+ port link-type trunk
+ port trunk permit vlan 10 20
+ link-aggregation mode dynamic
+ quit
+
+# ---- 成员端口加入聚合组 ----
+system-view
+interface GigabitEthernet1/0/1
+ port link-aggregation group 1
+ quit
+interface GigabitEthernet1/0/2
+ port link-aggregation group 1
+ quit
+
+# ---- 确认聚合口放通 VLAN ----
+# 确认成员口 VLAN 配置与聚合口一致，不一致会加入失败。
+system-view
+interface Bridge-Aggregation 1
+ display this
+ quit
+
+# ---- 保存配置 ----
+return
+save force
+
+# --------------------------------------------------------------------
+# [提示] 成员口的速率、双工、VLAN 配置必须完全一致，否则无法加入聚合组。
+# [提示] 跨设备聚合需要堆叠或 M-LAG / VSU 支持，单机聚合不跨设备。

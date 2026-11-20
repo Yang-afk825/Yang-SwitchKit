@@ -1,0 +1,95 @@
+# ====================================================================
+# 华为 Huawei | 巡检与排障命令
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 设备信息与资源 ----
+# 开局先留一份基线，出问题时拿它对比。
+display version
+display device
+display device manufacture-info
+display clock
+display cpu-usage
+display memory-usage
+display boot-loader
+display startup
+display fan
+display power
+display temperature all
+
+# ---- 接口与流量 ----
+# 看错包、丢包和速率，是判断链路质量最快的一组命令。
+display interface brief
+display interface
+display counters inbound interface
+display counters outbound interface
+display counters rate inbound interface
+display counters rate outbound interface
+display interface | include error
+display interface transceiver verbose
+
+# ---- 二层转发表 ----
+# mac-address flapping record 直接列出 MAC 漂移记录，是定位环路最直接的线索。
+display vlan
+display vlan summary
+display mac-address
+display mac-address flapping record
+display eth-trunk
+display stp brief
+display stp root
+display lldp neighbor brief
+
+# ---- 三层与地址 ----
+# 先看路由表里有没有你要的那条，再看 ARP 学没学到对端。
+display ip routing-table
+display ip routing-table statistics
+display arp all
+display ip interface brief
+display dhcp server ip-in-use
+display dhcp relay statistics
+display vrrp brief
+display ospf peer
+display ospf routing
+
+# ---- 安全与接入 ----
+# 命中计数长期为 0 的规则，往往说明它根本没生效。
+display dhcp snooping binding
+display dhcp snooping statistics
+display arp anti-attack statistics check user-bind interface
+display port-security
+display port-security intrusion
+display ip source check user-bind
+display dot1x
+display acl all
+display traffic-filter applied-record
+
+# ---- 硬件与光模块 ----
+# 光模块收发功率是排查「链路 up 但丢包」的关键数据。
+display transceiver interface
+display transceiver verbose
+display poe interface
+display poe power-state
+display power-supply
+display elabel
+
+# ---- 日志与告警 ----
+# 异常重启原因和日志缓冲是定位设备自身问题的入口。
+display logbuffer
+display logbuffer summary
+display trapbuffer
+display alarm active
+display reset-reason
+display cpu-usage history
+
+# ---- 保存当前配置（便于与巡检输出对照） ----
+return
+save
+
+# --------------------------------------------------------------------
+# [风险] display diagnostic-information 与部分统计清零类命令会占用较多 CPU，请在业务低谷期执行。
+
+# --------------------------------------------------------------------
+# [提示] 以上全部是查询命令，不会改动设备配置，可以放心执行。
+# [提示] 巡检建议在业务低谷期做，部分 display 命令会占用较多 CPU。
+# [提示] 报障时先在故障时刻留存一遍，再和正常时刻的输出对比，差异就是线索。
+# [提示] 生成的是一整批查询命令，逐段复制到设备上执行即可，不会改动任何配置。

@@ -1,0 +1,46 @@
+# ====================================================================
+# 思科 Cisco | 802.1X 认证
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 配置 RADIUS 服务器 ----
+# 思科要先 aaa new-model 打开 AAA，再定义 radius server，最后用 dot1x system-auth-control 全局开启 802.1X。老版本 IOS 用的是 radius-server host ... key ... 那套命令。
+configure terminal
+aaa new-model
+radius server SCG-RADIUS
+ address ipv4 192.168.1.30 auth-port 1812 acct-port 1813
+ key Radius@123
+ exit
+aaa authentication dot1x default group radius
+aaa authorization network default group radius
+dot1x system-auth-control
+end
+
+# ---- 端口开启 802.1X ----
+# dot1x pae authenticator 表示这个端口扮演认证方角色，思科的 802.1X 必须配它。port-control auto 才是「认证通过才放行」。
+configure terminal
+interface range GigabitEthernet1/0/1 - 8
+ switchport mode access
+ authentication port-control unauthorized-force
+ dot1x pae authenticator
+ exit
+end
+
+# ---- 保存配置 ----
+end
+write memory
+
+# ---- 核对认证状态 ----
+# 看端口状态是 AUTHORIZED 还是 UNAUTHORIZED。
+show dot1x all summary
+show authentication sessions
+
+# --------------------------------------------------------------------
+# [风险] 共享密钥在脚本里是明文，交付后请改用其他方式保存或立即更换。
+# [风险] 802.1X 与端口安全、IP 源防护等接入控制功能同时配置时，报文要同时满足所有检查规则才能通过，排障时注意。
+
+# --------------------------------------------------------------------
+# [提示] 思科默认用 EAP 中继，具体认证方法由 RADIUS 服务器协商，不需要在交换机上指定 chap / pap。
+# [提示] 选基于 MAC 还是基于端口，取决于一个端口下接几台设备：接一台用 portbased，接 HUB 或多台用 macbased。
+# [提示] 端口先要能被 RADIUS 服务器访问到，认证报文走的是交换机的管理地址。
+# [提示] 802.1X 和端口安全不能同时开，H3C 上开端口安全会重置 802.1X 配置。

@@ -1,0 +1,25 @@
+# ====================================================================
+# 思科 Cisco | 链路聚合（LACP）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 成员端口加入通道组 ----
+# LACP 用 mode active，静态聚合用 mode on；两端模式必须匹配。
+configure terminal
+interface range GigabitEthernet1/0/1 - 2
+ channel-group 1 mode on
+ exit
+
+# ---- 配置 Port-channel 接口 ----
+# 通道口的 VLAN 配置要与成员口一致。
+configure terminal
+interface Port-channel1
+ exit
+
+# ---- 保存配置 ----
+end
+write memory
+
+# --------------------------------------------------------------------
+# [提示] 成员口的速率、双工、VLAN 配置必须完全一致，否则无法加入聚合组。
+# [提示] 跨设备聚合需要堆叠或 M-LAG / VSU 支持，单机聚合不跨设备。

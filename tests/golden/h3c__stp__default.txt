@@ -1,0 +1,35 @@
+# ====================================================================
+# H3C 新华三 | 生成树（MSTP / RSTP）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 启用并设置生成树模式 ----
+# Comware V5 的启用命令是 stp enable，V7 为 stp global enable。
+system-view
+stp global enable
+stp mode mstp
+
+# ---- MSTP 域配置 ----
+# 同一域内所有设备的域名、修订级别、实例映射必须完全一致。
+system-view
+stp region-configuration
+ region-name REGION-1
+ revision-level 0
+ instance 1 vlan 10 20
+ instance 2 vlan 30 40
+ active region-configuration
+ quit
+
+# ---- 指定根桥角色 ----
+# 根桥应部署在核心层，接入层设备不要抢根。
+system-view
+stp instance 1 root primary
+stp instance 2 root primary
+
+# ---- 保存配置 ----
+return
+save force
+
+# --------------------------------------------------------------------
+# [提示] 全网生成树模式必须统一，混用 MSTP 与 RSTP 会算出意外的拓扑。
+# [提示] 根桥应放在核心层，接入层设备不要抢根。

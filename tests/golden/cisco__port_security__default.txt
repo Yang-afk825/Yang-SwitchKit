@@ -1,0 +1,23 @@
+# ====================================================================
+# 思科 Cisco | 端口安全与 MAC 绑定
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 配置端口安全 ----
+# 思科必须先 switchport port-security 打开，再配参数。端口必须是 access 或 trunk 模式（不能是 dynamic），所以这里补了一句 switchport mode access——如果这些口要跑 trunk，请删掉它。
+configure terminal
+interface range GigabitEthernet1/0/1 - 8
+ switchport mode access
+ switchport port-security
+ switchport port-security maximum 3
+ switchport port-security violation restrict
+ switchport port-security mac-address sticky
+ exit
+end
+write memory
+
+# --------------------------------------------------------------------
+# [提示] 查看运行情况：show port-security；查看已绑定的地址：show port-security address。
+# [提示] 端口安全是全局开关 + 端口参数两级配置，缺一不可。
+# [提示] H3C 开启端口安全会重置端口上的 802.1X 与 MAC 认证配置，二者不能共存。
+# [提示] 开启后端口不能同时做镜像目的口、不能加入聚合组。

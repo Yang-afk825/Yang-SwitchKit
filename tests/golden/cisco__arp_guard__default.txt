@@ -1,0 +1,45 @@
+# ====================================================================
+# 思科 Cisco | ARP 防护与 IP 源防护
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 开启动态 ARP 检测（DAI） ----
+# DAI 靠 DHCP Snooping 绑定表判断报文是否合法，所以要先开 DHCP Snooping 并指定信任端口。validate 三个关键字分别校验源 MAC、目的 MAC、IP 是否与 ARP 内容一致。
+configure terminal
+ip dhcp snooping
+ip dhcp snooping vlan 10,20
+no ip dhcp snooping information option
+ip arp inspection vlan 10,20
+ip arp inspection validate src-mac dst-mac ip
+end
+
+# ---- 指定 ARP 信任端口 ----
+# 上行口必须同时设为 DHCP Snooping 和 DAI 的信任口，否则来自网关的正常 ARP 会被丢弃。
+configure terminal
+interface GigabitEthernet1/0/24
+ ip dhcp snooping trust
+ ip arp inspection trust
+ exit
+end
+
+# ---- 用户口开启 IP 源防护 ----
+# 按绑定表校验源 IP（和源 MAC），终端私自改 IP 后报文会被直接丢弃。
+configure terminal
+interface range GigabitEthernet1/0/1 - 22
+ ip verify source
+ ip verify source port-security
+ exit
+end
+
+# ---- 保存配置 ----
+end
+write memory
+
+# --------------------------------------------------------------------
+# [风险] IP 源防护依赖绑定表。终端若用静态 IP，必须先用 ip source binding 建表，否则它会连不上网。
+
+# --------------------------------------------------------------------
+# [提示] 查看运行情况：show ip arp inspection；看丢弃统计：show ip arp inspection statistics。
+# [提示] ARP 防护要配合 DHCP Snooping 用，绑定表是它的判断依据，建议先配那一条。
+# [提示] 上行口一定要设为信任口，否则正常报文也会被拦。
+# [提示] 静态 IP+MAC 绑定命令各家、各型号差异很大，本工具不生成，请对照本机手册单独配置。

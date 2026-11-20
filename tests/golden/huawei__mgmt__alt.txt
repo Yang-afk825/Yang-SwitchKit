@@ -1,0 +1,49 @@
+# ====================================================================
+# 华为 Huawei | 管理面加固（账号 / SSH / NTP / SNMP）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 设备名与管理地址 ----
+system-view
+sysname SW-CORE-01
+vlan 99
+ quit
+interface Vlanif 99
+ ip address 10.0.99.1 24
+ quit
+ip route-static 0.0.0.0 0 10.0.99.254
+
+# ---- 管理员账号与 SSH ----
+# rsa local-key-pair create 会交互询问密钥长度，输入 2048；生成需数分钟。
+system-view
+aaa
+ local-user netadmin password irreversible-cipher N3t@dmin#2026
+ local-user netadmin privilege level 15
+ local-user netadmin service-type ssh
+ quit
+
+user-interface vty 0 4
+ authentication-mode aaa
+ protocol inbound ssh
+ quit
+stelnet server enable
+rsa local-key-pair create
+undo telnet server enable
+
+# ---- NTP 时间同步 ----
+system-view
+ntp-service enable
+ntp-service unicast-server 10.0.0.5
+
+# ---- 保存配置 ----
+# save 命令会提示确认，按 Y 继续。
+return
+save
+
+# --------------------------------------------------------------------
+# [风险] 脚本中的密码是明文，交付后请立即更换。
+
+# --------------------------------------------------------------------
+# [提示] 关闭 telnet、只保留 SSH，是管理面加固最基本的一条。
+# [提示] 开局配置里的明文密码，交付前必须统一更换。
+# [提示] 华为/H3C 的 RSA 密钥生成需要几分钟，属正常现象。

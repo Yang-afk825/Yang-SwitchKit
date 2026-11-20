@@ -19,14 +19,16 @@ import re
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .. import audit, blueprint, diagnose, diffcfg, explain, registry, rollback, verify
+from .. import (__version__, audit, blueprint, compose, diagnose, diffcfg,
+                explain, project, registry, rollback, verify)
 from ..model import GenResult, Kind
 from ..vendors import VENDORS, generate, supports
 from . import dpi
+from . import dnd
 from . import theme as T
 
 APP_NAME = "Yang-SwitchKit"
-APP_VERSION = "V3.0.0"
+APP_VERSION = "V" + __version__
 
 PAGE_MAIN = "一键生成配置命令"
 PAGE_DOC = "设备命令详解"
@@ -35,11 +37,6 @@ PAGE_DIFF = "配置对比"
 PAGE_DIAG = "故障排查"
 PAGE_VERIFY = "核验说明"
 PAGE_HELP = "使用说明"
-
-DOC_DETAIL = "本次生成的命令详解"
-DOC_MANUAL = "该厂商命令手册"
-DOC_COMPARE = "四厂商命令对照"
-DOC_MODES = (DOC_DETAIL, DOC_MANUAL, DOC_COMPARE)
 
 #: 脚本区的三种输出视图
 MODE_CONFIG = "config"
@@ -52,6 +49,11 @@ SCRIPT_MODES = (
     (MODE_ROLLBACK, "回滚脚本", "▌ 回滚脚本"),
 )
 MODE_TITLES = {mode: title for mode, _label, title in SCRIPT_MODES}
+
+DOC_DETAIL = "本次生成的命令详解"
+DOC_MANUAL = "该厂商命令手册"
+DOC_COMPARE = "四厂商命令对照"
+DOC_MODES = (DOC_DETAIL, DOC_MANUAL, DOC_COMPARE)
 
 #: 脚本框里独占一行的分隔线
 RULE = "#" + "-" * 68
@@ -78,6 +80,11 @@ class App(tk.Tk):
         self.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
         self.minsize(int(1120 * self.scale), int(680 * self.scale))
 
+        # ---- 方案文件状态 --------------------------------------------
+        self.project_path: pathlib.Path | None = None   # 当前方案文件，None 表示还没存过
+        self.dirty = False          # 有没有未保存的改动
+        self._silent = False        # 回填 / 加载方案期间，不要让 trace 标脏
+
         # ---- 跨主题重建需要保留的状态 --------------------------------
         self.vendor_key: str = VENDORS[0].key
         self.vendor_var = tk.StringVar(value=self.vendor_key)
@@ -86,9 +93,9 @@ class App(tk.Tk):
         self.script_mode: str = MODE_CONFIG
         self._last_rollback = None     # 回滚脚本的上一次推导结果，供状态栏统计
         self._last_blueprint = None    # 整机开局的上一次编排结果
-        self.baseline = None           # 变更前配置（rollback.Baseline），精确回滚用
-        self.baseline_source: str = ""  # 粘贴的原文，切主题重建时用来回填
-        self.audit_source: str = ""    # 体检页粘贴的原文，切主题重建时用来回填
+        self.baseline = None           # 变更前配置（rollback.Baseline）
+        self.baseline_source: str = "" # 粘贴的原文，切主题重建时回填
+        self.audit_source: str = ""    # 体检页粘贴的原文
         self.diff_a_source: str = ""   # 对比页 A 侧原文
         self.diff_b_source: str = ""   # 对比页 B 侧原文
 
@@ -109,6 +116,12 @@ class App(tk.Tk):
 
         self.columnconfigure(0, weight=1)
         self._build_all()
+        # 关窗口前问一句有没有没保存的改动，避免白填一屏参数
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # 把方案文件拖进窗口就能打开。挂不上也不影响用，按钮和命令行都还在
+        self.drop = dnd.FileDrop(self, self._on_files_dropped)
+        self.drop.enable()
 
     # ==================================================================
     # 骨架
@@ -132,8 +145,11 @@ class App(tk.Tk):
 
         self._restore_fields()
         self._sync_gen_buttons()
+        self._bind_dirty_tracking()
+        self._bind_shortcuts()
         self._refresh_output()
         self._refresh_doc()
+        self._refresh_title()
 
     def _build_banner(self) -> None:
         banner = tk.Frame(self, background=T.PANEL, padx=T.px(18), pady=T.px(12))
@@ -155,6 +171,10 @@ class App(tk.Tk):
 
         bar = tk.Frame(banner, background=T.PANEL)
         bar.grid(row=0, column=2, sticky="e")
+        ttk.Button(bar, text="打开方案", style="Ghost.TButton",
+                   command=self._open_project).pack(side="left", padx=(0, T.px(6)))
+        ttk.Button(bar, text="保存方案", style="Ghost.TButton",
+                   command=self._save_project).pack(side="left", padx=(0, T.px(6)))
         ttk.Button(bar, text="浅色" if self.dark else "深色", style="Ghost.TButton",
                    command=self._toggle_theme).pack(side="left", padx=(0, T.px(6)))
         ttk.Button(bar, text="关于", style="Ghost.TButton",
@@ -297,45 +317,10 @@ class App(tk.Tk):
                         style="Card.TCheckbutton",
                         command=self._toggle_comments).pack(side="right")
 
-    def _paint_mode_buttons(self) -> None:
-        """按当前模式给标签按钮上色：选中的用强调色，未选中的用浅底。"""
-        for mode, tab in self.mode_buttons.items():
-            on = mode == self.script_mode
-            tab.configure(background=T.ACCENT if on else T.TAB_IDLE,
-                          foreground=T.ON_ACCENT if on else T.FG)
-
-        # 基线入口只在回滚模式下有意义，其它模式收起来
-        btn = getattr(self, "baseline_btn", None)
-        if btn is None:
-            return
-        if self.script_mode == MODE_ROLLBACK:
-            loaded = self.baseline is not None
-            btn.configure(
-                text=f"变更前配置 · 已载入 {len(self.baseline)} 条" if loaded
-                     else "载入变更前配置",
-                background=T.SEL_BG if loaded else T.TAB_IDLE,
-                foreground=T.ACCENT if loaded else T.FG_DIM)
-            btn.pack(side="right", padx=(T.px(6), 0))
-        else:
-            btn.pack_forget()
-
-    def _set_script_mode(self, mode: str) -> None:
-        """在「配置脚本」与「回滚脚本」之间切换。"""
-        if mode == self.script_mode:
-            return
-        self.script_mode = mode
-        self._paint_mode_buttons()
-        self.script_title.configure(text=MODE_TITLES.get(mode, "▌ 一键配置脚本"))
-        self._refresh_output(keep_scroll=False)
-        if mode == MODE_ROLLBACK:
-            self._flash("已切到回滚脚本：按逆序撤销当前脚本区的配置。"
-                        "执行前先存档现网配置，别让回滚本身也需要回滚。")
-        else:
-            self._flash("已切回配置脚本")
-
     def _toggle_comments(self) -> None:
         keep = self.show_comment.get()
         self._refresh_output(keep_scroll=True)
+        self._mark_dirty()
         if keep:
             self._flash("已恢复注释：分节标题、说明与风险提示都会出现在脚本里")
         else:
@@ -575,9 +560,41 @@ class App(tk.Tk):
         self.doc.tag_configure("version", foreground=T.C_NOTE)
         self.doc.tag_configure("compare", foreground=T.C_CMT, font=T.FONT_MONO)
 
-    # ==================================================================
-    # 页面三：配置体检
-    # ==================================================================
+    def _paint_mode_buttons(self) -> None:
+        """按当前模式给标签按钮上色：选中的用强调色，未选中的用浅底。"""
+        for mode, tab in self.mode_buttons.items():
+            on = mode == self.script_mode
+            tab.configure(background=T.ACCENT if on else T.TAB_IDLE,
+                          foreground=T.ON_ACCENT if on else T.FG)
+
+        # 基线入口只在回滚模式下有意义，其它模式收起来
+        btn = getattr(self, "baseline_btn", None)
+        if btn is None:
+            return
+        if self.script_mode == MODE_ROLLBACK:
+            loaded = self.baseline is not None
+            btn.configure(
+                text=f"变更前配置 · 已载入 {len(self.baseline)} 条" if loaded
+                     else "载入变更前配置",
+                background=T.SEL_BG if loaded else T.TAB_IDLE,
+                foreground=T.ACCENT if loaded else T.FG_DIM)
+            btn.pack(side="right", padx=(T.px(6), 0))
+        else:
+            btn.pack_forget()
+
+    def _set_script_mode(self, mode: str) -> None:
+        """在「配置脚本」与「回滚脚本」之间切换。"""
+        if mode == self.script_mode:
+            return
+        self.script_mode = mode
+        self._paint_mode_buttons()
+        self.script_title.configure(text=MODE_TITLES.get(mode, "▌ 一键配置脚本"))
+        self._refresh_output(keep_scroll=False)
+        if mode == MODE_ROLLBACK:
+            self._flash("已切到回滚脚本：按逆序撤销当前脚本区的配置。"
+                        "执行前先存档现网配置，别让回滚本身也需要回滚。")
+        else:
+            self._flash("已切回配置脚本")
 
     def _build_audit_page(self, page) -> None:
         page.columnconfigure(0, weight=1)
@@ -737,10 +754,6 @@ class App(tk.Tk):
         self.clipboard_clear()
         self.clipboard_append(text)
         self._flash("体检报告已复制，可直接贴进交付文档")
-
-    # ==================================================================
-    # 页面四：配置对比
-    # ==================================================================
 
     def _diff_input(self, parent, title: str, column: int):
         """左右各一个输入框：上面标题条、中间正文、下面行数。"""
@@ -929,10 +942,6 @@ class App(tk.Tk):
         self.clipboard_append(text)
         self._flash("差异报告已复制")
 
-    # ==================================================================
-    # 页面五：故障排查
-    # ==================================================================
-
     def _build_diag_page(self, page) -> None:
         page.columnconfigure(0, minsize=T.px(210))
         page.columnconfigure(1, weight=1)
@@ -1050,314 +1059,6 @@ class App(tk.Tk):
         self.clipboard_clear()
         self.clipboard_append(text)
         self._flash("排查步骤已复制")
-
-    def _build_text_page(self, page, lines) -> None:
-        page.columnconfigure(0, weight=1)
-        page.rowconfigure(0, weight=1)
-
-        text = tk.Text(page, background=T.PANEL, foreground=T.FG,
-                       insertbackground=T.FG, font=T.FONT_UI,
-                       relief="flat", bd=0, wrap="word", padx=T.px(18),
-                       pady=T.px(14), selectbackground=T.SEL_BG,
-                       selectforeground=T.FG, spacing1=T.px(2), spacing3=T.px(2))
-        text.grid(row=0, column=0, sticky="nsew")
-        bar = ttk.Scrollbar(page, orient="vertical", command=text.yview)
-        bar.grid(row=0, column=1, sticky="ns")
-        text.configure(yscrollcommand=bar.set)
-
-        text.tag_configure("h1", foreground=T.C_HEAD,
-                           font=("Microsoft YaHei UI", 11, "bold"),
-                           spacing1=T.px(9), spacing3=T.px(5))
-        text.tag_configure("h2", foreground=T.C_BLOCK,
-                           font=("Microsoft YaHei UI", 10, "bold"),
-                           spacing1=T.px(7), spacing3=T.px(3))
-        text.tag_configure("body", foreground=T.FG)
-        text.tag_configure("dim", foreground=T.FG_FAINT)
-        text.tag_configure("ok", foreground=T.OK)
-        text.tag_configure("warn", foreground=T.C_WARN)
-        text.tag_configure("syntax", foreground=T.C_HEAD, font=T.FONT_MONO)
-
-        for line in lines:
-            text.insert("end", line + "\n", self._doc_tag(line))
-        text.configure(state="disabled")
-        if page is self.page_verify:
-            self.verify_text = text
-        if page is self.page_help:
-            self.help_text = text
-
-    # ==================================================================
-    # 取值 / 回填
-    # ==================================================================
-
-    def _vendor(self):
-        return next(v for v in VENDORS if v.key == self.vendor_key)
-
-    def _save_fields(self) -> None:
-        for scenario in registry.SCENARIOS:
-            self.store[(self.vendor_key, scenario.key)] = self._collect(scenario)
-
-    def _collect(self, scenario) -> dict:
-        data: dict = {}
-        built = self.widgets.get(scenario.key, {})
-        for param in scenario.params:
-            entry = built.get(param.key)
-            if entry is None:
-                data[param.key] = param.default
-                continue
-            kind, widget = entry
-            if kind == "text":
-                data[param.key] = widget.get("1.0", "end").rstrip("\n")
-            elif kind == "bool":
-                data[param.key] = "1" if widget.get() else ""
-            elif kind == "choice":
-                label = widget.get()
-                data[param.key] = self.choice_maps[scenario.key][param.key].get(
-                    label, label)
-            else:
-                data[param.key] = widget.get()
-        return data
-
-    def _restore_fields(self) -> None:
-        """把当前厂商保存过的参数回填到界面上。"""
-        for scenario in registry.SCENARIOS:
-            values = self.store.get((self.vendor_key, scenario.key))
-            if values is None:
-                values = {p.key: p.default for p in scenario.params}
-            built = self.widgets.get(scenario.key, {})
-            for param in scenario.params:
-                entry = built.get(param.key)
-                if entry is None:
-                    continue
-                kind, widget = entry
-                value = values.get(param.key, param.default)
-                if kind == "text":
-                    widget.delete("1.0", "end")
-                    widget.insert("1.0", str(value or ""))
-                elif kind == "bool":
-                    widget.set(str(value).strip().lower()
-                               in ("1", "true", "yes", "on", "是"))
-                elif kind == "choice":
-                    mapping = self.choice_maps[scenario.key][param.key]
-                    label = next((l for l, v in mapping.items()
-                                  if v == str(value)), None)
-                    if label is None:
-                        label = next(iter(mapping), "")
-                    widget.set(label)
-                else:
-                    widget.set(str(value or ""))
-
-    # ==================================================================
-    # 生成
-    # ==================================================================
-
-    def _gen_one(self, scenario_key: str) -> None:
-        ok = self._generate(scenario_key)
-        self._refresh_output(keep_scroll=False)
-        self._refresh_doc()
-        scenario = registry.get(scenario_key)
-        if ok:
-            self._flash(f"已生成【{scenario.name}】的命令，见左侧脚本区")
-        else:
-            self._flash(f"【{scenario.name}】生成失败：{self.errors.get(scenario_key, '')}")
-
-    def _gen_all(self) -> None:
-        failed = 0
-        for scenario in registry.SCENARIOS:
-            if not self._generate(scenario.key):
-                failed += 1
-        self._refresh_output(keep_scroll=False)
-        self._refresh_doc()
-        total = len(registry.SCENARIOS)
-        if failed:
-            self._flash(f"已生成 {total - failed}/{total} 个场景，另有 {failed} 个场景参数有误")
-        else:
-            self._flash(f"已生成全部 {total} 个场景的命令")
-
-    def _generate(self, scenario_key: str) -> bool:
-        scenario = registry.get(scenario_key)
-        params = self._collect(scenario)
-        self.store[(self.vendor_key, scenario_key)] = params
-
-        if not supports(self.vendor_key, scenario_key):
-            self.errors[scenario_key] = f"{self._vendor().name} 不支持本场景"
-            self.results.pop(scenario_key, None)
-            self._update_card_state(scenario_key)
-            return False
-
-        try:
-            result = generate(self.vendor_key, scenario_key, params, scenario)
-        except ValueError as exc:
-            self.errors[scenario_key] = str(exc)
-            self.results.pop(scenario_key, None)
-            self._update_card_state(scenario_key)
-            return False
-        except Exception as exc:  # noqa: BLE001
-            self.errors[scenario_key] = f"生成失败：{exc}"
-            self.results.pop(scenario_key, None)
-            self._update_card_state(scenario_key)
-            return False
-
-        self.results[scenario_key] = result
-        self.errors.pop(scenario_key, None)
-        if scenario_key not in self.order:
-            self.order.append(scenario_key)
-        self._update_card_state(scenario_key)
-        return True
-
-    def _update_card_state(self, scenario_key: str) -> None:
-        label = self.cards.get(scenario_key)
-        if label is None:
-            return
-        if scenario_key in self.errors:
-            label.configure(text=f"✗ 未生成：{self.errors[scenario_key]}",
-                            style="CardWarn.TLabel")
-        elif scenario_key in self.results:
-            lines = sum(len(b.lines) for b in self.results[scenario_key].blocks)
-            label.configure(text=f"✓ 已生成，本段 {lines} 行命令，已在左侧脚本区",
-                            style="CardFaint.TLabel")
-        else:
-            label.configure(text="尚未生成。填好参数后点右上角「生成脚本」。",
-                            style="CardFaint.TLabel")
-
-    def _sync_gen_buttons(self) -> None:
-        """厂商换了之后，不支持该场景的按钮要跟着禁用。"""
-        for scenario in registry.SCENARIOS:
-            btn = self.gen_buttons.get(scenario.key)
-            if btn is None:
-                continue
-            if supports(self.vendor_key, scenario.key):
-                btn.state(["!disabled"])
-            else:
-                btn.state(["disabled"])
-
-    def _clear_all(self) -> None:
-        self.results.clear()
-        self.errors.clear()
-        self.order.clear()
-        for scenario in registry.SCENARIOS:
-            self._update_card_state(scenario.key)
-        self._refresh_output()
-        self._refresh_doc()
-        self._flash("已清空脚本区与生成记录")
-
-    def _on_vendor_change(self) -> None:
-        """换厂商：先把当前厂商填的参数存下来，再回填新厂商并重算已生成的场景。"""
-        key = self.vendor_var.get()
-        if key == self.vendor_key:
-            return
-        self._save_fields()
-        self.vendor_key = key
-
-        vendor = self._vendor()
-        self.strip_hint.configure(text=f"{vendor.platform}　|　{vendor.port_hint}")
-
-        # 表单内容不随厂商变，但要换成该厂商上次填过的值
-        self._restore_fields()
-
-        # 已经生成过的场景，按新厂商重新算一遍
-        self.results.clear()
-        self.errors.clear()
-        todo = list(self.order)
-        self._sync_gen_buttons()
-        for scenario in registry.SCENARIOS:
-            self.cards[scenario.key].configure(text="")
-            self._update_card_state(scenario.key)
-        for scenario_key in todo:
-            self._generate(scenario_key)
-
-        self._refresh_output(keep_scroll=False)
-        self._refresh_doc()
-        # 基线是按厂商语法解析的，换厂商必须重来
-        self.baseline = None
-        self.baseline_source = ""
-        if hasattr(self, "baseline_btn"):
-            self._paint_mode_buttons()
-        if hasattr(self, "diag_out"):
-            self._show_case()
-        self._flash(f"已切换到 {vendor.name}，重新生成了 {len(self.order)} 个场景")
-
-    # ==================================================================
-    # 渲染：左侧脚本区
-    # ==================================================================
-
-    def _active_keys(self) -> list:
-        return [s.key for s in registry.SCENARIOS if s.key in self.results]
-
-    def _script_text(self) -> str:
-        keys = self._active_keys()
-        if not keys:
-            return ""
-        if not self.show_comment.get():
-            # 取消勾选「保留注释」= 只要命令，整段可以直接粘到设备上跑
-            return self._plain_text(keys)
-
-        vendor = self._vendor()
-        width = 68
-        out = [
-            "#" + "=" * width,
-            f"# {vendor.name} · {vendor.platform}",
-            f"# {APP_NAME} · 一键配置脚本 · 共 {len(keys)} 个场景",
-            "# 下发前请核对软件版本与端口名",
-            "#" + "=" * width,
-        ]
-        for index, key in enumerate(keys, 1):
-            scenario = registry.get(key)
-            result = self.results[key]
-            out.append("")
-            out.append(RULE)
-            out.append(f"# 【{index}】{scenario.name}　（{scenario.group}）")
-            out.append(RULE)
-            for block in result.blocks:
-                if block.title:
-                    out.append("")
-                    out.append(f"# ---- {block.title} ----")
-                if block.comment:
-                    for line in block.comment.splitlines():
-                        out.append(f"# {line}" if line.strip() else "#")
-                out.extend(block.lines)
-            if result.warnings:
-                out.append("")
-                for item in result.warnings:
-                    out.append(f"# [风险] {item}")
-            if result.notes:
-                out.append("")
-                for item in result.notes:
-                    out.append(f"# [提示] {item}")
-        out.append("")
-        out.append("#" + "=" * width)
-        out.append("# 说明：命令格式仅供参考！相同配置核对后复制粘贴到设备即可。")
-        out.append("#" + "=" * width)
-
-        failed = [k for k in self.order if k in self.errors]
-        if failed:
-            out.append("")
-            for key in failed:
-                out.append(f"# [未生成] {registry.get(key).name}：{self.errors[key]}")
-        return "\n".join(out)
-
-    def _plain_text(self, keys) -> str:
-        """只输出命令本身：分节标题、说明、风险提示、IOS 的 ! 注释全部去掉。
-
-        直接删以 # / ! 开头的行（两家 CLI 里这两个字符都不可能出现在命令开头），
-        场景之间用空行隔开，末尾不留空行。
-        """
-        out: list[str] = []
-        for key in keys:
-            result = self.results[key]
-            start = len(out)
-            for block in result.blocks:
-                for line in block.lines:
-                    text = line.rstrip()
-                    if not text.strip():
-                        continue
-                    if text.lstrip()[:1] in ("#", "!"):
-                        continue
-                    out.append(text)
-            if len(out) > start:
-                out.append("")
-        while out and not out[-1].strip():
-            out.pop()
-        return "\n".join(out)
 
     def _current_text(self) -> str:
         """脚本区当前该显示什么 —— 取决于顶部的模式选择。"""
@@ -1541,6 +1242,567 @@ class App(tk.Tk):
             for item in undo.notes:
                 out.append(f"{cc} [提示] {item}")
         return "\n".join(out)
+
+    def _build_text_page(self, page, lines) -> None:
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(0, weight=1)
+
+        text = tk.Text(page, background=T.PANEL, foreground=T.FG,
+                       insertbackground=T.FG, font=T.FONT_UI,
+                       relief="flat", bd=0, wrap="word", padx=T.px(18),
+                       pady=T.px(14), selectbackground=T.SEL_BG,
+                       selectforeground=T.FG, spacing1=T.px(2), spacing3=T.px(2))
+        text.grid(row=0, column=0, sticky="nsew")
+        bar = ttk.Scrollbar(page, orient="vertical", command=text.yview)
+        bar.grid(row=0, column=1, sticky="ns")
+        text.configure(yscrollcommand=bar.set)
+
+        text.tag_configure("h1", foreground=T.C_HEAD,
+                           font=("Microsoft YaHei UI", 11, "bold"),
+                           spacing1=T.px(9), spacing3=T.px(5))
+        text.tag_configure("h2", foreground=T.C_BLOCK,
+                           font=("Microsoft YaHei UI", 10, "bold"),
+                           spacing1=T.px(7), spacing3=T.px(3))
+        text.tag_configure("body", foreground=T.FG)
+        text.tag_configure("dim", foreground=T.FG_FAINT)
+        text.tag_configure("ok", foreground=T.OK)
+        text.tag_configure("warn", foreground=T.C_WARN)
+        text.tag_configure("syntax", foreground=T.C_HEAD, font=T.FONT_MONO)
+
+        for line in lines:
+            text.insert("end", line + "\n", self._doc_tag(line))
+        text.configure(state="disabled")
+        if page is self.page_verify:
+            self.verify_text = text
+        if page is self.page_help:
+            self.help_text = text
+
+    # ==================================================================
+    # 取值 / 回填
+    # ==================================================================
+
+    def _vendor(self):
+        return next(v for v in VENDORS if v.key == self.vendor_key)
+
+    def _save_fields(self) -> None:
+        for scenario in registry.SCENARIOS:
+            self.store[(self.vendor_key, scenario.key)] = self._collect(scenario)
+
+    def _collect(self, scenario) -> dict:
+        data: dict = {}
+        built = self.widgets.get(scenario.key, {})
+        for param in scenario.params:
+            entry = built.get(param.key)
+            if entry is None:
+                data[param.key] = param.default
+                continue
+            kind, widget = entry
+            if kind == "text":
+                data[param.key] = widget.get("1.0", "end").rstrip("\n")
+            elif kind == "bool":
+                data[param.key] = "1" if widget.get() else ""
+            elif kind == "choice":
+                label = widget.get()
+                data[param.key] = self.choice_maps[scenario.key][param.key].get(
+                    label, label)
+            else:
+                data[param.key] = widget.get()
+        return data
+
+    def _restore_fields(self) -> None:
+        """把当前厂商保存过的参数回填到界面上。"""
+        for scenario in registry.SCENARIOS:
+            values = self.store.get((self.vendor_key, scenario.key))
+            if values is None:
+                values = {p.key: p.default for p in scenario.params}
+            built = self.widgets.get(scenario.key, {})
+            for param in scenario.params:
+                entry = built.get(param.key)
+                if entry is None:
+                    continue
+                kind, widget = entry
+                value = values.get(param.key, param.default)
+                if kind == "text":
+                    widget.delete("1.0", "end")
+                    widget.insert("1.0", str(value or ""))
+                elif kind == "bool":
+                    widget.set(str(value).strip().lower()
+                               in ("1", "true", "yes", "on", "是"))
+                elif kind == "choice":
+                    mapping = self.choice_maps[scenario.key][param.key]
+                    label = next((l for l, v in mapping.items()
+                                  if v == str(value)), None)
+                    if label is None:
+                        label = next(iter(mapping), "")
+                    widget.set(label)
+                else:
+                    widget.set(str(value or ""))
+
+    # ==================================================================
+    # 生成
+    # ==================================================================
+
+    def _gen_one(self, scenario_key: str) -> None:
+        ok = self._generate(scenario_key)
+        self._mark_dirty()
+        self._refresh_output(keep_scroll=False)
+        self._refresh_doc()
+        scenario = registry.get(scenario_key)
+        if ok:
+            self._flash(f"已生成【{scenario.name}】的命令，见左侧脚本区")
+        else:
+            self._flash(f"【{scenario.name}】生成失败：{self.errors.get(scenario_key, '')}")
+
+    def _gen_all(self) -> None:
+        failed = 0
+        for scenario in registry.SCENARIOS:
+            if not self._generate(scenario.key):
+                failed += 1
+        self._mark_dirty()
+        self._refresh_output(keep_scroll=False)
+        self._refresh_doc()
+        total = len(registry.SCENARIOS)
+        if failed:
+            self._flash(f"已生成 {total - failed}/{total} 个场景，另有 {failed} 个场景参数有误")
+        else:
+            self._flash(f"已生成全部 {total} 个场景的命令")
+
+    def _generate(self, scenario_key: str) -> bool:
+        scenario = registry.get(scenario_key)
+        params = self._collect(scenario)
+        self.store[(self.vendor_key, scenario_key)] = params
+
+        if not supports(self.vendor_key, scenario_key):
+            self.errors[scenario_key] = f"{self._vendor().name} 不支持本场景"
+            self.results.pop(scenario_key, None)
+            self._update_card_state(scenario_key)
+            return False
+
+        try:
+            result = generate(self.vendor_key, scenario_key, params, scenario)
+        except ValueError as exc:
+            self.errors[scenario_key] = str(exc)
+            self.results.pop(scenario_key, None)
+            self._update_card_state(scenario_key)
+            return False
+        except Exception as exc:  # noqa: BLE001
+            self.errors[scenario_key] = f"生成失败：{exc}"
+            self.results.pop(scenario_key, None)
+            self._update_card_state(scenario_key)
+            return False
+
+        self.results[scenario_key] = result
+        self.errors.pop(scenario_key, None)
+        if scenario_key not in self.order:
+            self.order.append(scenario_key)
+        self._update_card_state(scenario_key)
+        return True
+
+    def _update_card_state(self, scenario_key: str) -> None:
+        label = self.cards.get(scenario_key)
+        if label is None:
+            return
+        if scenario_key in self.errors:
+            label.configure(text=f"✗ 未生成：{self.errors[scenario_key]}",
+                            style="CardWarn.TLabel")
+        elif scenario_key in self.results:
+            lines = sum(len(b.lines) for b in self.results[scenario_key].blocks)
+            label.configure(text=f"✓ 已生成，本段 {lines} 行命令，已在左侧脚本区",
+                            style="CardFaint.TLabel")
+        else:
+            label.configure(text="尚未生成。填好参数后点右上角「生成脚本」。",
+                            style="CardFaint.TLabel")
+
+    def _sync_gen_buttons(self) -> None:
+        """厂商换了之后，不支持该场景的按钮要跟着禁用。"""
+        for scenario in registry.SCENARIOS:
+            btn = self.gen_buttons.get(scenario.key)
+            if btn is None:
+                continue
+            if supports(self.vendor_key, scenario.key):
+                btn.state(["!disabled"])
+            else:
+                btn.state(["disabled"])
+
+    def _clear_all(self) -> None:
+        self.results.clear()
+        self.errors.clear()
+        self.order.clear()
+        for scenario in registry.SCENARIOS:
+            self._update_card_state(scenario.key)
+        self._refresh_output()
+        self._refresh_doc()
+        self._mark_dirty()
+        self._flash("已清空脚本区与生成记录")
+
+    def _on_vendor_change(self) -> None:
+        """换厂商：先把当前厂商填的参数存下来，再回填新厂商并重算已生成的场景。"""
+        key = self.vendor_var.get()
+        if key == self.vendor_key:
+            return
+        self._save_fields()
+        self.vendor_key = key
+
+        vendor = self._vendor()
+        self.strip_hint.configure(text=f"{vendor.platform}　|　{vendor.port_hint}")
+
+        # 表单内容不随厂商变，但要换成该厂商上次填过的值
+        self._restore_fields()
+
+        # 已经生成过的场景，按新厂商重新算一遍
+        self.results.clear()
+        self.errors.clear()
+        todo = list(self.order)
+        self._sync_gen_buttons()
+        for scenario in registry.SCENARIOS:
+            self.cards[scenario.key].configure(text="")
+            self._update_card_state(scenario.key)
+        for scenario_key in todo:
+            self._generate(scenario_key)
+
+        # 基线是按厂商语法解析的，换厂商必须作废重来
+        self.baseline = None
+        self.baseline_source = ""
+        if hasattr(self, "baseline_btn"):
+            self._paint_mode_buttons()
+        if hasattr(self, "diag_out"):
+            self._show_case()
+
+        self._refresh_output(keep_scroll=False)
+        self._refresh_doc()
+        self._flash(f"已切换到 {vendor.name}，重新生成了 {len(self.order)} 个场景")
+
+    # ==================================================================
+    # 方案文件：保存 / 打开
+    # ==================================================================
+
+    def _refresh_title(self) -> None:
+        name = self.project_path.name if self.project_path else "未命名方案"
+        self.title(f"{APP_NAME} · 交换机配置命令一键生成 — {name}"
+                   + (" *" if self.dirty else ""))
+
+    def _mark_dirty(self, *_args) -> None:
+        """有未保存的改动。回填 / 加载方案期间由 _silent 挡住。"""
+        if self._silent or self.dirty:
+            return
+        self.dirty = True
+        self._refresh_title()
+
+    def _clear_dirty(self) -> None:
+        self.dirty = False
+        self._refresh_title()
+
+    def _bind_dirty_tracking(self) -> None:
+        """给每个参数控件挂上变更监听。
+
+        多层文本框用 <<Modified>> 事件；下拉框用 <<ComboboxSelected>>；
+        输入框和勾选框背后是 Variable，用 trace 监听变量写入——
+        这样「打了字但还没点生成」也算改动，关窗口时不会被悄悄丢掉。
+        """
+        for scenario_widgets in self.widgets.values():
+            for kind, widget in scenario_widgets.values():
+                if kind == "text":
+                    # 回填时 insert 已经把 modified 置位了，先复位，
+                    # 否则用户第一次输入不会产生 False→True 的跳变，事件不触发
+                    widget.edit_modified(False)
+                    widget.bind("<<Modified>>", self._on_text_modified, add="+")
+                elif kind == "choice":
+                    widget.bind("<<ComboboxSelected>>", self._mark_dirty, add="+")
+                else:
+                    widget.trace_add("write", self._mark_dirty)
+
+    def _on_text_modified(self, event) -> None:
+        widget = event.widget
+        if widget.edit_modified():
+            widget.edit_modified(False)   # 一次性事件，复位后下次才能再触发
+            self._mark_dirty()
+
+    def _bind_shortcuts(self) -> None:
+        self.bind("<Control-s>", self._shortcut_save)
+        self.bind("<Control-Shift-S>", self._shortcut_save_as)
+        self.bind("<Control-o>", self._shortcut_open)
+        # Tk 的 Text 类自带 <Control-o>（插入新行）绑定，会抢在 toplevel 之前执行；
+        # 在每个 Text 上重绑并返回 break，Ctrl+O 才只做「打开方案」
+        for widget in self._walk(widget_class=tk.Text):
+            widget.bind("<Control-o>", self._shortcut_open)
+
+    def _walk(self, parent=None, widget_class=None) -> list:
+        node = self if parent is None else parent
+        found: list = []
+        for child in node.winfo_children():
+            if widget_class is None or isinstance(child, widget_class):
+                found.append(child)
+            found.extend(self._walk(child, widget_class))
+        return found
+
+    def _shortcut_save(self, _event=None):
+        self._save_project()
+        return "break"
+
+    def _shortcut_save_as(self, _event=None):
+        self._save_project(force_dialog=True)
+        return "break"
+
+    def _shortcut_open(self, _event=None):
+        self._open_project()
+        return "break"
+
+    def _collect_project(self) -> project.Project:
+        """把界面状态收成一个 Project。
+
+        先把当前厂商所有场景的值从界面收进 store —— 用户很可能填了参数
+        但没点「生成脚本」，这部分也要存下来，不然保存完再打开就丢了。
+        """
+        self._save_fields()
+
+        params: dict = {}
+        for (vendor_key, scenario_key), values in self.store.items():
+            params.setdefault(vendor_key, {})[scenario_key] = dict(values)
+
+        return project.Project(
+            vendor=self.vendor_key,
+            params=params,
+            order=list(self.order),
+            comments=bool(self.show_comment.get()),
+            theme="dark" if self.dark else "light",
+        )
+
+    def _apply_project(self, plan: project.Project) -> None:
+        """把方案灌进界面。
+
+        先把状态写进内存，再整页重建 —— 参数值和厂商都要靠表单重建才能反映出来，
+        逐个控件去 set 容易漏掉下拉框的显示文本映射。
+        """
+        self.store.clear()
+        for vendor_key, scenes in plan.params.items():
+            for scenario_key, values in scenes.items():
+                self.store[(vendor_key, scenario_key)] = dict(values)
+
+        valid = {v.key for v in VENDORS}
+        self.vendor_key = plan.vendor if plan.vendor in valid else VENDORS[0].key
+        self.vendor_var.set(self.vendor_key)   # Radiobutton 的 command 只在点击时触发，这里不会误触
+
+        self.results.clear()
+        self.errors.clear()
+        self.order.clear()
+        self.show_comment.set(bool(plan.comments))
+
+        if (plan.theme == "dark") != self.dark:
+            self.dark = plan.theme == "dark"
+            T.apply(self, self.scale, self.dark)
+
+        self._silent = True
+        try:
+            self._build_all()       # _restore_fields 会从刚填好的 store 取值
+        finally:
+            self._silent = False
+
+        known = {s.key for s in registry.SCENARIOS}
+        for scenario_key in plan.order:
+            if scenario_key in known:
+                self._generate(scenario_key)
+
+        self._refresh_output(keep_scroll=False)
+        self._refresh_doc()
+        self._set_status()
+
+    def _save_project(self, force_dialog: bool = False) -> bool:
+        """保存方案。返回 True 表示确实写盘成功了。"""
+        # 已经有文件、又没有改动：不必再原样写一遍。
+        # 这一步很关键——早先这里是静默覆盖，用户点了按钮看不到任何反应，
+        # 会以为按钮坏了。
+        if not force_dialog and self.project_path and not self.dirty:
+            self._flash(f"没有未保存的改动，{self.project_path.name} 已是最新", 6000)
+            return True
+
+        target = None if force_dialog else self.project_path
+        if target is None:
+            stem = (self.project_path.stem if self.project_path
+                    else f"{self._vendor().name.split()[0]}_配置方案")
+            chosen = filedialog.asksaveasfilename(
+                title="保存方案",
+                defaultextension=project.SUFFIX,
+                initialfile=stem + project.SUFFIX,
+                filetypes=project.FILETYPES,
+            )
+            if not chosen:
+                return False
+            target = pathlib.Path(chosen)
+
+        try:
+            project.to_file(target, self._collect_project())
+        except OSError as exc:
+            messagebox.showerror("保存失败", str(exc))
+            return False
+
+        self.project_path = target
+        self._clear_dirty()
+        # 用绿色显示，8 秒。常驻状态栏是灰色小字，一闪而过的灰字等于没提示
+        self._flash(f"✓ 已保存 {target.name}　"
+                    f"（Ctrl+S 再存一次，Ctrl+Shift+S 另存）",
+                    8000, "OK.TLabel")
+        return True
+
+    def _open_project(self) -> None:
+        if not self._confirm_discard():
+            return
+
+        chosen = filedialog.askopenfilename(
+            title="打开方案", filetypes=project.FILETYPES)
+        if chosen:
+            self.open_path(chosen)
+
+    def open_path(self, path) -> bool:
+        """按路径打开方案。
+
+        命令行参数、拖到 exe 图标上、拖进窗口、菜单里点「打开方案」，
+        四条路最后都走到这里，行为保持一致。
+        """
+        target = pathlib.Path(path)
+        try:
+            plan, warnings = project.from_file(target)
+        except project.ProjectError as exc:
+            messagebox.showerror("打不开这个方案", f"{target}\n\n{exc}")
+            return False
+
+        self._apply_project(plan)
+        self.project_path = target
+        self._clear_dirty()
+        self._flash(f"已打开方案：{target.name}（{plan.count()} 个场景带参数，"
+                    f"重新生成了 {len(self.order)} 个）")
+
+        if warnings:
+            messagebox.showwarning(
+                "方案打开了，但有几处被跳过",
+                f"这个方案里有 {len(warnings)} 处内容当前版本不认识，已忽略：\n\n"
+                + "\n".join(f"· {w}" for w in warnings[:8])
+                + ("\n…" if len(warnings) > 8 else "")
+                + "\n\n常见原因：方案由更新版本保存，或者手改过文件。",
+            )
+        return True
+
+    def _confirm_discard(self) -> bool:
+        """有未保存改动时先问一句。True 表示可以继续往下走。"""
+        if not self.dirty:
+            return True
+        answer = messagebox.askyesnocancel(
+            "有未保存的改动",
+            "当前方案的改动还没保存。\n\n"
+            "「是」保存后继续，\n"
+            "「否」放弃改动，\n"
+            "「取消」什么都不做。",
+        )
+        if answer is None:
+            return False
+        if answer:
+            return self._save_project()
+        return True
+
+    def _on_files_dropped(self, paths: list) -> None:
+        """文件被拖进窗口。只认方案文件，别的给个提示不动当前状态。"""
+        target = next((p for p in paths
+                       if str(p).lower().endswith(project.SUFFIX)), None)
+        if target is None:
+            names = "、".join(pathlib.Path(p).name for p in paths[:3])
+            self._flash(f"拖进来的是 {names}，不是方案文件（要 {project.SUFFIX}）")
+            return
+        if not self._confirm_discard():
+            return
+        self.open_path(target)
+
+    def _on_close(self) -> None:
+        if self._confirm_discard():
+            drop = getattr(self, "drop", None)
+            if drop is not None:
+                drop.disable()           # 把窗口过程还回去，别留野指针
+            self.destroy()
+
+    # ==================================================================
+    # 渲染：左侧脚本区
+    # ==================================================================
+
+    def _active_keys(self) -> list:
+        return [s.key for s in registry.SCENARIOS if s.key in self.results]
+
+    def _script_text(self) -> str:
+        keys = self._active_keys()
+        if not keys:
+            return ""
+        if not self.show_comment.get():
+            # 取消勾选「保留注释」= 只要命令，整段可以直接粘到设备上跑
+            return self._plain_text(keys)
+
+        vendor = self._vendor()
+        width = 68
+        out = [
+            "#" + "=" * width,
+            f"# {vendor.name} · {vendor.platform}",
+            f"# {APP_NAME} · 一键配置脚本 · 共 {len(keys)} 个场景",
+            "# 下发前请核对软件版本与端口名",
+            "#" + "=" * width,
+        ]
+        for index, key in enumerate(keys, 1):
+            scenario = registry.get(key)
+            result = self.results[key]
+            out.append("")
+            out.append(RULE)
+            out.append(f"# 【{index}】{scenario.name}　（{scenario.group}）")
+            out.append(RULE)
+            for block in result.blocks:
+                if block.title:
+                    out.append("")
+                    out.append(f"# ---- {block.title} ----")
+                if block.comment:
+                    for line in block.comment.splitlines():
+                        out.append(f"# {line}" if line.strip() else "#")
+                out.extend(block.lines)
+            if result.warnings:
+                out.append("")
+                for item in result.warnings:
+                    out.append(f"# [风险] {item}")
+            if result.notes:
+                out.append("")
+                for item in result.notes:
+                    out.append(f"# [提示] {item}")
+        out.append("")
+        out.append("#" + "=" * width)
+        out.append("# 说明：命令格式仅供参考！相同配置核对后复制粘贴到设备即可。")
+        out.append("#" + "=" * width)
+
+        failed = [k for k in self.order if k in self.errors]
+        if failed:
+            out.append("")
+            for key in failed:
+                out.append(f"# [未生成] {registry.get(key).name}：{self.errors[key]}")
+        # 多个场景拼在一起会有重复的 system-view 和好几次保存，
+        # 同一条提示也可能被 registry 和厂商模块各写一遍，这里统一收干净
+        return "\n".join(
+            compose.tidy_commands(compose.dedup_lines(out), self.vendor_key))
+
+    def _plain_text(self, keys) -> str:
+        """只输出命令本身：分节标题、说明、风险提示、IOS 的 ! 注释全部去掉。
+
+        直接删以 # / ! 开头的行（两家 CLI 里这两个字符都不可能出现在命令开头），
+        场景之间用空行隔开，末尾不留空行。
+        """
+        out: list[str] = []
+        for key in keys:
+            result = self.results[key]
+            start = len(out)
+            for block in result.blocks:
+                for line in block.lines:
+                    text = line.rstrip()
+                    if not text.strip():
+                        continue
+                    if text.lstrip()[:1] in ("#", "!"):
+                        continue
+                    out.append(text)
+            if len(out) > start:
+                out.append("")
+        while out and not out[-1].strip():
+            out.pop()
+        # 纯命令模式更需要整理：重复的进视图和保存命令在设备上看着很刺眼
+        return "\n".join(compose.tidy_commands(out, self.vendor_key))
 
     def _refresh_output(self, keep_scroll: bool = True) -> None:
         text = self._current_text()
@@ -1757,6 +2019,9 @@ class App(tk.Tk):
         keys = self._active_keys()
         vendor = self._vendor()
         parts = [f"当前版本 {APP_VERSION}", f"当前厂商：{vendor.name}"]
+        if self.project_path:
+            parts.append(f"方案：{self.project_path.name}"
+                         + ("（未保存）" if self.dirty else ""))
         if keys:
             merged = self._merged()
             hit, total, _miss = explain.coverage(self.vendor_key, merged)
@@ -1769,15 +2034,21 @@ class App(tk.Tk):
 
     def _set_status(self) -> None:
         if hasattr(self, "status"):
-            self.status.configure(text=self._status_text())
+            self.status.configure(text=self._status_text(), style="Faint.TLabel")
 
-    def _flash(self, message: str) -> None:
+    def _flash(self, message: str, ms: int = 5000, style: str = "") -> None:
+        """状态栏临时提示，过一会儿自动退回常驻信息。
+
+        ``style`` 可以用 ``OK.TLabel`` 这类样式把提示变醒目，
+        保存成功这种「用户必须看见」的反馈用得上——常驻状态栏是灰色小字，
+        一闪而过的灰字等于没提示。
+        """
         if not hasattr(self, "status"):
             return
-        self.status.configure(text=message)
+        self.status.configure(text=message, style=style or "Faint.TLabel")
         if self._status_timer:
             self.after_cancel(self._status_timer)
-        self._status_timer = self.after(5000, self._set_status)
+        self._status_timer = self.after(ms, self._set_status)
 
     def _help_lines(self) -> list:
         vendor = self._vendor()
@@ -1811,6 +2082,33 @@ class App(tk.Tk):
             "",
             "每个厂商的参数是分开保存的，来回切换厂商不会把填好的值冲掉；",
             "已经生成过的场景，切换厂商后会自动按新厂商重算一遍。",
+            "",
+            "━━ 多个场景会合并成一份 ━━",
+            "",
+            "生成了好几个场景时，脚本区里的命令会自动整理，不是简单堆在一起：",
+            "重复的 system-view 只留第一个，保存只留最后一次，",
+            "同一条提示不会出现两遍。所以整段粘到设备上，不会出现保存三遍这种怪东西。",
+            "",
+            "思科和锐捷的 configure terminal 不会删。它们的 show 必须在特权模式下才能跑，",
+            "中间的 end 和 configure terminal 是成对的，删了会让命令落到错误的视图里。",
+            "",
+            "━━ 把填好的一屏参数存成方案 ━━",
+            "",
+            "右上角有「保存方案」和「打开方案」。存下来的是一份 .json 文件，",
+            "里面是四个厂商全部场景的参数、已生成的场景、注释开关和主题，",
+            "下次打开接着改，不用重新填一遍。",
+            "",
+            "快捷键：Ctrl+S 保存，Ctrl+Shift+S 另存为，Ctrl+O 打开。",
+            "标题栏会显示方案名，有未保存的改动时后面跟一个 *。",
+            "",
+            "另外两种偷懒的打开方式：",
+            "· 把 .json 方案文件直接拖进这个窗口，松手就打开了",
+            "· 把文件拖到 YangSwitchKit.exe 的图标上，效果一样",
+            "",
+            "存成 .json 是有意为之——纯文本，能进 git，能直接用记事本改，",
+            "两台设备要部署同一套规划时，把这份文件发给同事就行。",
+            "方案文件不是配置脚本，两者别混：方案给本工具打开，",
+            "脚本（.txt）才是粘到设备上执行的。",
             "",
             "━━ 一整套开局怎么串：整机开局 ━━",
             "",
@@ -2001,5 +2299,15 @@ class App(tk.Tk):
             self._bind_wheel(child)
 
 
-def run() -> None:
-    App().mainloop()
+def run(initial: str = "") -> None:
+    """启动界面。
+
+    ``initial`` 是要自动打开的方案文件路径，可以是空串。来源见 main.py：
+    命令行参数、拖到 exe 图标上、双击已关联的文件。
+    """
+    app = App()
+    if initial:
+        # 等窗口先画出来再加载：加载失败要弹提示框，
+        # 主窗口还没显示时单独弹个框在桌面上会很怪
+        app.after(80, lambda: app.open_path(initial))
+    app.mainloop()

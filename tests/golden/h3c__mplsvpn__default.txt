@@ -1,0 +1,81 @@
+# ====================================================================
+# H3C 新华三 | MPLS L3VPN（PE 侧）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 先建好 Loopback ----
+# LSR ID 用 Loopback 地址最稳，只要它不 down，LDP 会话就不会断。
+system-view
+interface Loopback0
+ ip address 1.1.1.1 32
+ quit
+
+# ---- 开启 MPLS 与 LDP ----
+# 公网侧接口要同时开 mpls enable 和 mpls ldp enable，少一条标签就发不出去。接 CE 的接口不要开 MPLS。
+system-view
+mpls lsr-id 1.1.1.1
+mpls ldp
+interface Vlan-interface 100
+ ip address 10.0.0.1 30
+ mpls enable
+ mpls ldp enable
+ quit
+
+# ---- 创建 VPN 实例 ----
+# RD 保证不同 VPN 的同网段路由不冲突；RT 决定路由在哪些 VPN 之间互通，本机导入值要对上对端的导出值。
+system-view
+ip vpn-instance VPNA
+ route-distinguisher 100:1
+ vpn-target 100:1 import-extcommunity
+ vpn-target 100:1 export-extcommunity
+ quit
+
+# ---- 把 CE 接口绑定到 VPN 实例 ----
+# 注意顺序：ip binding 会清掉接口上原有的 IP 配置，所以必须先绑实例再配地址，反了地址就没了。
+system-view
+interface Vlan-interface 10
+ ip binding vpn-instance VPNA
+ ip address 10.1.1.2 24
+ quit
+
+# ---- MP-BGP 传递 VPN 路由 ----
+# vpnv4 地址族负责 PE 之间传 VPN 路由；ip vpn-instance 下面是 PE 与 CE 之间的私网邻居。next-hop-local 让 PE 把下一跳改成本机，避免对端迭代不出隧道。
+system-view
+bgp 100
+ peer 2.2.2.2 as-number 100
+ peer 2.2.2.2 connect-interface Loopback0
+ address-family vpnv4
+  peer 2.2.2.2 enable
+  peer 2.2.2.2 next-hop-local
+  quit
+ ip vpn-instance VPNA
+  peer 10.1.1.1 as-number 65410
+  address-family ipv4 unicast
+   peer 10.1.1.1 enable
+   import-route direct
+   quit
+  quit
+ quit
+
+# ---- 保存配置 ----
+return
+save force
+
+# ---- 分段核对 ----
+# 按顺序查：LDP 邻居通了没、标签有没有下发、VPN 实例建了没、MP-BGP 邻居起来没、VPN 路由收没收到。
+system-view
+display mpls ldp peer
+display mpls ldp lsp
+display ip vpn-instance
+display bgp peer vpnv4
+display bgp vpnv4 vpn-instance VPNA
+
+# --------------------------------------------------------------------
+# [风险] MPLS 的前提是公网侧 IGP 已经跑通，而且两端的 Loopback 都要被宣告进 IGP，否则 LDP 会话建不起来。建议先配 OSPF 或 IS-IS 那两条场景。
+# [风险] PE 与 CE 之间的接口不要再开 MPLS，也不要绑两个 VPN 实例。
+
+# --------------------------------------------------------------------
+# [提示] 生成的是 PE 侧配置。P 设备只需要中间的 MPLS + LDP 部分，不需要 VPN 实例。
+# [提示] 公网侧必须先跑通 IGP（OSPF 或 IS-IS），且 Loopback 要宣告进去，LDP 邻居才建得起来。建议先配那两条场景。
+# [提示] RD 用来区分不同 VPN 的同网段路由；RT 决定路由在哪些 VPN 之间互通，本机导入值要对上对端的导出值，配反了就是不通。
+# [提示] 两台 PE 上的 VPN 实例名可以不同，但 RD、RT、VPN 路由的下一跳必须理清。

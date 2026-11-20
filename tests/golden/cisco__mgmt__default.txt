@@ -1,0 +1,57 @@
+# ====================================================================
+# 思科 Cisco | 管理面加固（账号 / SSH / NTP / SNMP）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 设备名与管理地址 ----
+# 三层交换机用 ip route 0.0.0.0 0.0.0.0 配默认路由；二层交换机只能配 ip default-gateway。
+configure terminal
+hostname SW-CORE-01
+vlan 99
+ exit
+interface Vlan99
+ ip address 10.0.99.1 255.255.255.0
+ no shutdown
+ exit
+ip default-gateway 10.0.99.254
+
+# ---- 管理员账号与 SSH ----
+# 生成 RSA 密钥前必须先配置 ip domain-name 和 hostname，否则会失败。exec-timeout 10 0 表示空闲 10 分钟自动断开。
+configure terminal
+username netadmin privilege 15 secret N3t@dmin#2026
+ip domain-name scg.local
+crypto key generate rsa modulus 2048
+ip ssh version 2
+
+line vty 0 4
+ transport input ssh
+ login local
+ exec-timeout 10 0
+ exit
+no ip http server
+no ip http secure-server
+
+# ---- NTP 时间同步 ----
+# 思科 IOS 使用 ntp server，部分平台还需 ntp master 或指定 source 接口。
+configure terminal
+ntp server 10.0.0.5
+
+# ---- SNMP（v2c） ----
+configure terminal
+snmp-server community Read@2026 RO
+snmp-server host 10.0.0.6 version 2c Read@2026
+snmp-server enable traps
+snmp-server location DC-01
+
+# ---- 保存配置 ----
+end
+write memory
+
+# --------------------------------------------------------------------
+# [风险] 脚本中的密码是明文，交付后请立即更换。
+# [风险] SNMP v2c 团体字明文传输，生产环境建议升级到 v3。
+
+# --------------------------------------------------------------------
+# [提示] 关闭 telnet、只保留 SSH，是管理面加固最基本的一条。
+# [提示] 开局配置里的明文密码，交付前必须统一更换。
+# [提示] 华为/H3C 的 RSA 密钥生成需要几分钟，属正常现象。

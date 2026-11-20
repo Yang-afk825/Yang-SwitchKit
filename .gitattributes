@@ -1,0 +1,20 @@
+# 统一换行符，避免 Windows / Linux / macOS 协作时整文件被判为「已修改」
+* text=auto
+
+*.py     text eol=lf
+*.md     text eol=lf
+*.txt    text eol=lf
+*.json   text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+
+# golden 快照必须固定在 LF，否则跨平台比对会全部报差异
+tests/golden/** text eol=lf
+
+# 二进制文件不要做换行转换
+*.ico binary
+*.png binary
+*.exe binary
+*.apk binary

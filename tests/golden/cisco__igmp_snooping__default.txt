@@ -1,0 +1,34 @@
+# ====================================================================
+# 思科 Cisco | 组播 IGMP Snooping
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 开启 IGMP Snooping ----
+# 全局一条打开，再逐 VLAN 打开。
+configure terminal
+ip igmp snooping
+ip igmp snooping vlan 10
+end
+
+# ---- 开启 IGMP 查询器 ----
+# 思科的查询器默认按最小 IP 选举，多台交换机都开也没关系。
+configure terminal
+ip igmp snooping querier
+ip igmp snooping vlan 10 querier
+end
+
+# ---- 静态指定路由器端口 ----
+# 组播流量从这些口进来。不指定的话靠动态学习，上行不稳时表项容易丢。
+configure terminal
+ip igmp snooping vlan 10 mrouter interface GigabitEthernet1/0/24
+end
+
+# ---- 保存配置 ----
+end
+write memory
+
+# --------------------------------------------------------------------
+# [提示] 要把查询器地址固定成 192.168.10.1，可在 VLAN 接口下配 ip igmp snooping querier address，该命令随平台版本差异较大，请用 ? 确认后再下发。
+# [提示] 查看运行情况：show ip igmp snooping；看组播组：show ip igmp snooping groups。
+# [提示] 同一 VLAN 里只能有一个查询器，多台设备都开容易互相干扰。
+# [提示] 上行口建议手工指成路由器端口，避免组播流被误剪。

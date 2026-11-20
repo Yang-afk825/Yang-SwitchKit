@@ -1,0 +1,29 @@
+# ====================================================================
+# H3C 新华三 | 端口镜像
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 创建本地镜像组 ----
+system-view
+mirroring-group 1 local
+
+# ---- 指定被镜像端口 ----
+system-view
+interface range GigabitEthernet1/0/1 to GigabitEthernet1/0/4
+ mirroring-group 1 mirroring-port both
+ quit
+
+# ---- 指定监控端口 ----
+# 监控口不要承载业务，接抓包主机或 IDS。
+system-view
+interface GigabitEthernet1/0/24
+ mirroring-group 1 monitor-port
+ quit
+
+# ---- 保存配置 ----
+return
+save force
+
+# --------------------------------------------------------------------
+# [提示] 监控端口的带宽要大于被镜像端口的总流量，否则会丢包。
+# [提示] 被镜像端口若同时配了端口隔离或聚合，镜像可能不生效。

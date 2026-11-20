@@ -1,0 +1,84 @@
+# ====================================================================
+# 思科 Cisco | MPLS L3VPN（PE 侧）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 先建好 Loopback 并打开 CEF ----
+# 思科跑 MPLS 必须先开 CEF（ip cef），这是前置条件。
+configure terminal
+ip cef
+interface Loopback0
+ ip address 1.1.1.1 255.255.255.255
+ exit
+end
+
+# ---- 开启 MPLS 与 LDP ----
+# mpls ip 开在 P / PE 之间的公网接口上；接 CE 的接口不要开 MPLS。
+configure terminal
+mpls label protocol ldp
+mpls ldp router-id Loopback0 force
+interface Vlan100
+ ip address 10.0.0.1 255.255.255.252
+ mpls ip
+ exit
+end
+
+# ---- 创建 VRF ----
+# 思科 / 锐捷用 ip vrf（老写法）；较新的 IOS-XE 也可以写 vrf definition，两者不能混用。
+configure terminal
+ip vrf VPNA
+ rd 100:1
+ route-target export 100:1
+ route-target import 100:1
+ exit
+end
+
+# ---- 把 CE 接口划入 VRF ----
+# 注意顺序：ip vrf forwarding 会清掉接口上原有的 IP 配置，所以必须先划 VRF 再配地址，反了地址就没了。
+configure terminal
+interface Vlan10
+ ip vrf forwarding VPNA
+ ip address 10.1.1.2 255.255.255.0
+ exit
+end
+
+# ---- MP-BGP 传递 VPN 路由 ----
+# no bgp default ipv4-unicast 是 PE 上的常用开关，避免公网 IPv4 路由被无谓地发出去。send-community extended 必须配，VPNv4 靠扩展团体传 RT。
+configure terminal
+router bgp 100
+ no bgp default ipv4-unicast
+ neighbor 2.2.2.2 remote-as 100
+ neighbor 2.2.2.2 update-source Loopback0
+ address-family vpnv4
+  neighbor 2.2.2.2 activate
+  neighbor 2.2.2.2 send-community extended
+  exit-address-family
+ address-family ipv4 vrf VPNA
+  neighbor 10.1.1.1 remote-as 65410
+  neighbor 10.1.1.1 activate
+  redistribute connected
+  exit-address-family
+ exit
+end
+
+# ---- 保存配置 ----
+end
+write memory
+
+# ---- 分段核对 ----
+# 按顺序查：LDP 邻居通了没、标签有没有下发、VRF 建了没、MP-BGP 邻居起来没、VPN 路由收没收到。
+show mpls ldp neighbor
+show mpls ldp bindings
+show ip vrf
+show ip bgp vpnv4 all summary
+show ip route vrf VPNA
+
+# --------------------------------------------------------------------
+# [风险] MPLS 的前提是公网侧 IGP 已经跑通，而且两端的 Loopback 都要被宣告进 IGP，否则 LDP 会话建不起来。建议先配 OSPF 或 IS-IS 那两条场景。
+# [风险] MPLS L3VPN 是路由器级特性。思科这边要 IOS / IOS-XE 带 MPLS 特性的版本，Catalyst 9000 系列以上才支持，接入层交换机不具备这个能力。
+
+# --------------------------------------------------------------------
+# [提示] 生成的是 PE 侧配置。P 设备只需要中间的 MPLS + LDP 部分，不需要 VPN 实例。
+# [提示] 公网侧必须先跑通 IGP（OSPF 或 IS-IS），且 Loopback 要宣告进去，LDP 邻居才建得起来。建议先配那两条场景。
+# [提示] RD 用来区分不同 VPN 的同网段路由；RT 决定路由在哪些 VPN 之间互通，本机导入值要对上对端的导出值，配反了就是不通。
+# [提示] 两台 PE 上的 VPN 实例名可以不同，但 RD、RT、VPN 路由的下一跳必须理清。

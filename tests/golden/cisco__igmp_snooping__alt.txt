@@ -1,0 +1,32 @@
+# ====================================================================
+# 思科 Cisco | 组播 IGMP Snooping
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 开启 IGMP Snooping ----
+# 全局一条打开，再逐 VLAN 打开。
+configure terminal
+ip igmp snooping
+ip igmp snooping vlan 10
+end
+
+# ---- 静态指定路由器端口 ----
+# 组播流量从这些口进来。不指定的话靠动态学习，上行不稳时表项容易丢。
+configure terminal
+ip igmp snooping vlan 10 mrouter interface GigabitEthernet1/0/24
+end
+
+# ---- 开启快速离开 ----
+# 思科叫 immediate-leave，收到离开报文立即停止转发。一个口只接一台终端时才建议开。
+configure terminal
+ip igmp snooping vlan 10 immediate-leave
+end
+
+# ---- 保存配置 ----
+end
+write memory
+
+# --------------------------------------------------------------------
+# [提示] 查看运行情况：show ip igmp snooping；看组播组：show ip igmp snooping groups。
+# [提示] 同一 VLAN 里只能有一个查询器，多台设备都开容易互相干扰。
+# [提示] 上行口建议手工指成路由器端口，避免组播流被误剪。

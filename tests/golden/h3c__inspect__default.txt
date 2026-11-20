@@ -1,0 +1,99 @@
+# ====================================================================
+# H3C 新华三 | 巡检与排障命令
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 设备信息与资源 ----
+# 开局先留一份基线，出问题时拿它来对比。
+display version
+display device
+display device manuinfo
+display clock
+display cpu-usage
+display memory
+display boot-loader
+display startup
+display fan
+display power
+display temperature
+
+# ---- 接口与流量 ----
+# 看错包、丢包和速率，是判断链路质量最快的一组命令。
+display interface brief
+display interface
+display counters inbound interface
+display counters outbound interface
+display counters rate inbound interface
+display counters rate outbound interface
+display packet-drop interface
+display link-delay
+
+# ---- 二层转发表 ----
+# mac-move 能直接看出 MAC 漂移，是定位环路最直接的线索。
+display vlan brief
+display interface brief | include UP
+display mac-address
+display mac-address mac-move
+display link-aggregation summary
+display link-aggregation verbose
+display stp brief
+display stp root
+display stp region-configuration
+display lldp neighbor-information
+
+# ---- 三层与地址 ----
+# 先看路由表里有没有你要的那条，再看 ARP 学没学到对端。
+display ip routing-table
+display ip routing-table statistics
+display arp all
+display arp count
+display ip interface brief
+display dhcp server ip-in-use
+display dhcp relay statistics
+display vrrp brief
+display ospf peer
+display ospf routing
+
+# ---- 安全与接入 ----
+# 命中计数长期为 0 的规则，往往说明它根本没生效。
+display dhcp snooping binding
+display dhcp snooping statistics
+display arp detection statistics
+display port-security
+display port-security intrusion
+display ip verify source
+display dot1x
+display mac-address security
+display acl all
+display packet-filter statistics
+
+# ---- 硬件与光模块 ----
+# 光模块收发功率是排查「链路 up 但丢包」的关键数据。
+display transceiver interface
+display transceiver diagnosis interface
+display transceiver manuinfo interface
+display poe interface
+display poe interface power
+display power-supply
+
+# ---- 日志与告警 ----
+# 异常重启记录和日志缓冲是定位设备自身问题的入口。
+display logbuffer summary
+display logbuffer
+display trapbuffer
+display exception
+display reboot-info
+display diag
+
+# ---- 保存当前配置（便于与巡检输出对照） ----
+return
+save force
+
+# --------------------------------------------------------------------
+# [风险] display diagnostic-information 与部分统计清零类命令会占用较多 CPU，请在业务低谷期执行。
+
+# --------------------------------------------------------------------
+# [提示] 以上全部是查询命令，不会改动设备配置，可以放心执行。
+# [提示] 巡检建议在业务低谷期做，部分 display 命令会占用较多 CPU。
+# [提示] 报障时先在故障时刻留存一遍，再和正常时刻的输出对比，差异就是线索。
+# [提示] 生成的是一整批查询命令，逐段复制到设备上执行即可，不会改动任何配置。

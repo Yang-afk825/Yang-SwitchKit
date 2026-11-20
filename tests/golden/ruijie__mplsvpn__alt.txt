@@ -1,0 +1,87 @@
+# ====================================================================
+# 锐捷 Ruijie | MPLS L3VPN（PE 侧）
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 先建好 Loopback ----
+# LSR ID 用 Loopback 地址最稳。锐捷的环回口写法是 Loopback 0，接口名和编号之间有空格。
+configure terminal
+interface Loopback 0
+ ip address 1.1.1.1 255.255.255.255
+ exit
+end
+
+# ---- 开启 MPLS 与 LDP ----
+# 锐捷的写法和其他三家都不一样：全局是 mpls ip 开转发，mpls router ldp 进 LDP 视图再用 ldp router-id 指定 Router ID，没有 mpls lsr-id 这条命令。接口下要 mpls ip 加 label-switch 两条。
+configure terminal
+mpls ip
+mpls router ldp
+ ldp router-id interface Loopback 0 force
+ exit
+interface Vlan 100
+ ip address 10.0.0.1 255.255.255.252
+ mpls ip
+ label-switch
+ exit
+end
+
+# ---- 创建 VRF ----
+# 锐捷用 ip vrf（与思科一致）。
+configure terminal
+ip vrf VPNA
+ rd 100:1
+ route-target export 100:1
+ route-target import 100:1
+ exit
+end
+
+# ---- 把 CE 接口划入 VRF ----
+# 注意顺序：ip vrf forwarding 会清掉接口上原有的 IP 配置，所以必须先划 VRF 再配地址，反了地址就没了。
+configure terminal
+interface Vlan 10
+ ip vrf forwarding VPNA
+ ip address 10.1.1.2 255.255.255.0
+ exit
+end
+
+# ---- MP-BGP 传递 VPN 路由 ----
+# 锐捷的 VPNv4 地址族写成 address-family vpnv4 unicast，比思科多一个 unicast。
+configure terminal
+router bgp 100
+ no bgp default ipv4-unicast
+ neighbor 2.2.2.2 remote-as 100
+ neighbor 2.2.2.2 update-source Loopback 0
+ address-family vpnv4 unicast
+  neighbor 2.2.2.2 activate
+  neighbor 2.2.2.2 send-community extended
+  exit-address-family
+ address-family ipv4 vrf VPNA
+  neighbor 10.1.1.1 remote-as 65410
+  neighbor 10.1.1.1 activate
+  redistribute connected
+  exit-address-family
+ exit
+end
+
+# ---- 保存配置 ----
+end
+write
+
+# ---- 分段核对 ----
+# 按顺序查：LDP 邻居通了没、标签有没有下发、VRF 建了没、MP-BGP 邻居起来没、VPN 路由收没收到。
+show mpls ldp neighbor
+show mpls ldp binding
+show ip vrf
+show bgp vpnv4 unicast summary
+show ip route vrf VPNA
+
+# --------------------------------------------------------------------
+# [风险] 锐捷部分版本的接口命令写作 label-switching（带 ing），本工具生成的是官方文档里的 label-switch，下发前请用 ? 确认。
+# [风险] MPLS 的前提是公网侧 IGP 已经跑通，而且两端的 Loopback 都要被宣告进 IGP，否则 LDP 会话建不起来。建议先配 OSPF 或 IS-IS 那两条场景。
+# [风险] MPLS L3VPN 是路由器级特性。锐捷这边只有 N18K、S65 以上等高端型号支持，普通接入交换机不具备这个能力，配置前先确认型号与 license。
+
+# --------------------------------------------------------------------
+# [提示] 生成的是 PE 侧配置。P 设备只需要中间的 MPLS + LDP 部分，不需要 VPN 实例。
+# [提示] 公网侧必须先跑通 IGP（OSPF 或 IS-IS），且 Loopback 要宣告进去，LDP 邻居才建得起来。建议先配那两条场景。
+# [提示] RD 用来区分不同 VPN 的同网段路由；RT 决定路由在哪些 VPN 之间互通，本机导入值要对上对端的导出值，配反了就是不通。
+# [提示] 两台 PE 上的 VPN 实例名可以不同，但 RD、RT、VPN 路由的下一跳必须理清。

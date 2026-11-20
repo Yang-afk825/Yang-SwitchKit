@@ -1,0 +1,38 @@
+# ====================================================================
+# 华为 Huawei | DHCP Snooping
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 全局开启 DHCP 与 DHCP Snooping ----
+# dhcp enable 是总开关，漏了它 DHCP Snooping 不生效。
+system-view
+dhcp enable
+dhcp snooping enable
+
+# ---- 在 VLAN 内开启 ----
+# 华为的 DHCP Snooping 要在 VLAN 视图下逐个开启。
+system-view
+vlan 10
+ dhcp snooping enable
+ quit
+vlan 20
+ dhcp snooping enable
+ quit
+
+# ---- 指定信任接口 ----
+# 只有信任接口上收到的 DHCP 应答才会被转发，其余一律丢弃。
+system-view
+interface GigabitEthernet1/0/24
+ dhcp snooping trusted
+ quit
+
+# ---- 保存配置 ----
+return
+save
+
+# --------------------------------------------------------------------
+# [提示] 华为的「MAC 校验」开关名称随版本不同（例如 dhcp snooping check mac-address enable），本工具没有生成，请用 dhcp snooping check ? 确认后再配。
+# [提示] DHCP Snooping 绑定表是动态 ARP 检测与 IP 源防护的判断依据，建议一起配。
+# [提示] 配完后终端要重新获取一次地址（禁用再启用网卡）才会生成绑定表。
+# [提示] 只开 Snooping 不指定信任口，等于把所有 DHCP 应答都丢掉，配置要一次到位。
+# [提示] DHCP Snooping 的绑定表是后续 IP Source Guard、动态 ARP 检测的基础。

@@ -1,0 +1,38 @@
+# ====================================================================
+# H3C 新华三 | 组播 IGMP Snooping
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 开启 IGMP Snooping ----
+# 全局打开 IGMP Snooping 后，还要在具体 VLAN 里再打开一次。
+system-view
+igmp-snooping
+vlan 10
+ igmp-snooping enable
+ quit
+
+# ---- 配置 IGMP 查询器 ----
+# VLAN 内没有三层组播设备时，由交换机自己发查询报文维持组播表项。
+system-view
+vlan 10
+ igmp-snooping querier enable
+ igmp-snooping querier source-address 192.168.10.1
+ quit
+
+# ---- 静态指定路由器端口 ----
+# 组播流量从这些口进来。不指定的话设备靠动态学习识别，上行链路不稳定时表项容易丢。
+system-view
+interface Vlan-interface 10
+ igmp-snooping router-port interface GigabitEthernet1/0/24
+ quit
+
+# ---- 保存配置 ----
+return
+save force
+
+# --------------------------------------------------------------------
+# [风险] 同一个 VLAN 里只应存在一个 IGMP 查询器，多台设备都开容易互相干扰。
+
+# --------------------------------------------------------------------
+# [提示] 同一 VLAN 里只能有一个查询器，多台设备都开容易互相干扰。
+# [提示] 上行口建议手工指成路由器端口，避免组播流被误剪。

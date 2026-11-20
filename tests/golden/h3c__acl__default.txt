@@ -1,0 +1,30 @@
+# ====================================================================
+# H3C 新华三 | ACL 访问控制
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 定义 ACL ----
+# Comware V5 使用 acl number 编号，V7 使用 acl basic / advanced。
+system-view
+acl advanced 3000
+ step 10
+ rule 10 permit ip source 192.168.10.0 0.0.0.255
+ rule 20 permit ip source 192.168.20.0 0.0.0.255 destination 192.168.30.0 0.0.0.255
+ rule 30 deny ip
+ quit
+
+# ---- 应用到端口 ----
+system-view
+interface GigabitEthernet1/0/24
+ packet-filter 3000 inbound
+ quit
+
+# ---- 保存配置 ----
+return
+save force
+
+# --------------------------------------------------------------------
+# [提示] 未填写 ACL 编号，已默认使用 3000。
+# [提示] packet-filter 只能过滤进入端口 inbound 方向的流量，请确认方向正确。
+# [提示] 末尾建议保留显式拒绝规则，避免全部不匹配时默认放行。
+# [提示] 命中次数为 0 的规则会掩盖配置错误，下发后用 display 命令核对计数。

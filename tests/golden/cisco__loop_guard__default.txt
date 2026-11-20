@@ -1,0 +1,48 @@
+# ====================================================================
+# 思科 Cisco | 环路检测与 BPDU 保护
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 说明：思科没有环路检测（发探测帧）功能 ----
+# 这一段只是说明，不会下发到设备。
+! 思科没有与 H3C / 华为 / 锐捷「环路检测」对应的功能。
+! 接入层防环路的正解是：生成树 + PortFast 边缘端口 + BPDU 保护 + 风暴控制。
+! 下面按这套组合生成。
+
+# ---- 边缘端口 + BPDU 保护 ----
+# 全局一条让所有 PortFast 口都受 BPDU 保护；接口下再逐口确认一次。边缘口收到 BPDU 会直接 err-disable。
+configure terminal
+spanning-tree portfast bpduguard default
+interface range GigabitEthernet1/0/1 - 22
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ exit
+end
+
+# ---- BPDU 保护触发后的自动恢复 ----
+# err-disable 的端口默认不会自己恢复，配了这两条才会定时重试。
+configure terminal
+errdisable recovery cause bpduguard
+errdisable recovery interval 10
+end
+
+# ---- 确认生成树模式 ----
+# 思科默认就是 rapid-pvst。全网生成树模式要统一。
+configure terminal
+spanning-tree mode rapid-pvst
+end
+
+# ---- 保存配置 ----
+end
+write memory
+
+# --------------------------------------------------------------------
+# [风险] 自动恢复间隔 10 秒偏短，环路没排除就恢复会反复震荡，接入层一般设 300 秒以上。
+
+# --------------------------------------------------------------------
+# [提示] 接口下还可以用 spanning-tree guard loop 防单向链路导致的环路，适合配在上行 / 根端口上。
+# [提示] 查看被 err-disable 的端口：show interfaces status err-disabled。
+# [提示] BPDU 保护：边缘端口一旦收到 BPDU（说明下面接的不是终端而是交换机）立刻关闭端口。
+# [提示] 环路检测靠设备自己发探测报文，傻瓜交换机不发 BPDU，只能靠它兜底。
+# [提示] 锐捷的环路检测是全局开关，不能按端口单独开关。

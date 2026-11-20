@@ -1,0 +1,30 @@
+# ====================================================================
+# 思科 Cisco | DHCP Snooping
+# 由 Yang-SwitchKit 生成，执行前请核对版本与端口名
+# ====================================================================
+
+# ---- 开启 DHCP Snooping ----
+# no ip dhcp snooping information option 是常见必须项：交换机默认会往请求里插 option 82，上游服务器不认就会丢包。database 这一条让绑定表落盘，重启后不丢。
+configure terminal
+ip dhcp snooping
+ip dhcp snooping vlan 10,20
+no ip dhcp snooping information option
+ip dhcp snooping database flash:dhcpsnooping.db
+end
+
+# ---- 指定信任端口 ----
+# 只有信任端口上收到的 DHCP 应答才会被转发，其余一律丢弃。
+configure terminal
+interface GigabitEthernet1/0/24
+ ip dhcp snooping trust
+ exit
+end
+
+# ---- 保存配置 ----
+end
+write memory
+
+# --------------------------------------------------------------------
+# [提示] 查看绑定表：show ip dhcp snooping binding。
+# [提示] 只开 Snooping 不指定信任口，等于把所有 DHCP 应答都丢掉，配置要一次到位。
+# [提示] DHCP Snooping 的绑定表是后续 IP Source Guard、动态 ARP 检测的基础。
