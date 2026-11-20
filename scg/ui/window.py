@@ -86,6 +86,8 @@ class App(tk.Tk):
         self.script_mode: str = MODE_CONFIG
         self._last_rollback = None     # 回滚脚本的上一次推导结果，供状态栏统计
         self._last_blueprint = None    # 整机开局的上一次编排结果
+        self.baseline = None           # 变更前配置（rollback.Baseline），精确回滚用
+        self.baseline_source: str = ""  # 粘贴的原文，切主题重建时用来回填
         self.audit_source: str = ""    # 体检页粘贴的原文，切主题重建时用来回填
         self.diff_a_source: str = ""   # 对比页 A 侧原文
         self.diff_b_source: str = ""   # 对比页 B 侧原文
@@ -251,6 +253,11 @@ class App(tk.Tk):
             tab.pack(side="left", padx=(0, T.px(6)))
             tab.bind("<Button-1>", lambda e, m=mode: self._set_script_mode(m))
             self.mode_buttons[mode] = tab
+
+        self.baseline_btn = tk.Label(
+            bar, text="变更前配置", font=T.FONT_UI_SM, cursor="hand2",
+            padx=T.px(10), pady=T.px(5), borderwidth=0)
+        self.baseline_btn.bind("<Button-1>", lambda e: self._open_baseline())
         self._paint_mode_buttons()
 
         self.out = tk.Text(pane, background=T.PANEL, foreground=T.C_CMD,
@@ -291,11 +298,26 @@ class App(tk.Tk):
                         command=self._toggle_comments).pack(side="right")
 
     def _paint_mode_buttons(self) -> None:
-        """按当前模式给两个标签按钮上色：选中的用强调色，未选中的用浅底。"""
+        """按当前模式给标签按钮上色：选中的用强调色，未选中的用浅底。"""
         for mode, tab in self.mode_buttons.items():
             on = mode == self.script_mode
             tab.configure(background=T.ACCENT if on else T.TAB_IDLE,
                           foreground=T.ON_ACCENT if on else T.FG)
+
+        # 基线入口只在回滚模式下有意义，其它模式收起来
+        btn = getattr(self, "baseline_btn", None)
+        if btn is None:
+            return
+        if self.script_mode == MODE_ROLLBACK:
+            loaded = self.baseline is not None
+            btn.configure(
+                text=f"变更前配置 · 已载入 {len(self.baseline)} 条" if loaded
+                     else "载入变更前配置",
+                background=T.SEL_BG if loaded else T.TAB_IDLE,
+                foreground=T.ACCENT if loaded else T.FG_DIM)
+            btn.pack(side="right", padx=(T.px(6), 0))
+        else:
+            btn.pack_forget()
 
     def _set_script_mode(self, mode: str) -> None:
         """在「配置脚本」与「回滚脚本」之间切换。"""
@@ -1245,6 +1267,11 @@ class App(tk.Tk):
 
         self._refresh_output(keep_scroll=False)
         self._refresh_doc()
+        # 基线是按厂商语法解析的，换厂商必须重来
+        self.baseline = None
+        self.baseline_source = ""
+        if hasattr(self, "baseline_btn"):
+            self._paint_mode_buttons()
         if hasattr(self, "diag_out"):
             self._show_case()
         self._flash(f"已切换到 {vendor.name}，重新生成了 {len(self.order)} 个场景")
@@ -1393,6 +1420,84 @@ class App(tk.Tk):
         """注释符必须跟着厂商走：思科 / 锐捷的 # 不是注释，会被当命令执行。"""
         return "!" if self.vendor_key in ("cisco", "ruijie") else "#"
 
+    def _open_baseline(self) -> None:
+        """载入变更前的配置，把回滚从「撤销」升级成「恢复原值」。"""
+        win = tk.Toplevel(self)
+        self._baseline_win = win          # 留个引用，截图自检要用
+        win.title("变更前的配置 · 用于精确回滚")
+        win.configure(background=T.BG)
+        win.transient(self)
+        win.grab_set()
+
+        width, height = T.px(760), T.px(600)
+        self.update_idletasks()
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - width) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - height) // 3)
+        win.geometry(f"{width}x{height}+{x}+{y}")
+        win.minsize(T.px(520), T.px(420))
+
+        head = tk.Frame(win, background=T.ACCENT)
+        head.pack(fill="x")
+        ttk.Label(head, text="▌ 变更前的配置", style="ScriptTab.TLabel").pack(side="left")
+
+        tip = ttk.Label(
+            win, style="Dim.TLabel", justify="left", wraplength=width - T.px(40),
+            text=("把变更前这个接口（或整机）的配置粘进来，回滚会用里面的原值。\n\n"
+                  "  H3C / 华为    display current-configuration interface GigabitEthernet1/0/1\n"
+                  "  思科 / 锐捷   show running-config interface GigabitEthernet1/0/1\n\n"
+                  "不粘也能回滚，只是那些「撤销后会回到默认值」的命令只能给 undo；\n"
+                  "粘了之后，它们会改成恢复成你原来的取值。"))
+        tip.pack(fill="x", padx=T.px(16), pady=(T.px(12), T.px(8)))
+
+        wrap = tk.Frame(win, background=T.PANEL)
+        wrap.pack(fill="both", expand=True, padx=T.px(16))
+        wrap.rowconfigure(0, weight=1)
+        wrap.columnconfigure(0, weight=1)
+
+        box = tk.Text(wrap, background=T.PANEL, foreground=T.C_CMD,
+                      insertbackground=T.FG, font=T.FONT_MONO,
+                      relief="flat", bd=0, wrap="none",
+                      padx=T.px(10), pady=T.px(8),
+                      selectbackground=T.SEL_BG, selectforeground=T.FG)
+        box.grid(row=0, column=0, sticky="nsew")
+        vbar = ttk.Scrollbar(wrap, orient="vertical", command=box.yview)
+        vbar.grid(row=0, column=1, sticky="ns")
+        box.configure(yscrollcommand=vbar.set)
+        if self.baseline_source:
+            box.insert("1.0", self.baseline_source)
+        box.focus_set()
+
+        foot = tk.Frame(win, background=T.BG)
+        foot.pack(fill="x", padx=T.px(16), pady=T.px(12))
+
+        def apply_and_close():
+            text = box.get("1.0", "end").strip()
+            if not text:
+                self.baseline = None
+                self.baseline_source = ""
+                self._paint_mode_buttons()
+                self._refresh_output(keep_scroll=False)
+                self._flash("已清除变更前配置，回滚恢复为普通撤销")
+                win.destroy()
+                return
+
+            baseline = rollback.Baseline.parse(text, self.vendor_key)
+            self.baseline = baseline
+            self.baseline_source = text
+            self._paint_mode_buttons()
+            self._refresh_output(keep_scroll=False)
+            win.destroy()
+            self._flash(f"已载入变更前配置：{len(baseline)} 条，"
+                        f"{baseline.contexts} 个视图")
+
+        ttk.Button(foot, text="应用", style="Accent.TButton",
+                   command=apply_and_close).pack(side="right")
+        ttk.Button(foot, text="取消", style="Ghost.TButton",
+                   command=win.destroy).pack(side="right", padx=T.px(6))
+        ttk.Button(foot, text="清除已载入的", style="Ghost.TButton",
+                   command=lambda: box.delete("1.0", "end")).pack(side="left")
+        win.bind("<Escape>", lambda e: win.destroy())
+
     def _rollback_text(self) -> str:
         """把当前脚本区的配置反推成撤销脚本。"""
         keys = self._active_keys()
@@ -1404,7 +1509,8 @@ class App(tk.Tk):
         undo = rollback.build(
             self.vendor_key, results,
             scenario_name=f"脚本区当前 {len(keys)} 个场景",
-            vendor_name=self._vendor().name)
+            vendor_name=self._vendor().name,
+            baseline=self.baseline)
         self._last_rollback = undo
 
         cc = self._comment_char()
@@ -1414,6 +1520,9 @@ class App(tk.Tk):
             cc + "=" * width,
             f"{cc} {vendor.name} · 回滚脚本（撤销脚本区当前的 {len(keys)} 个场景）",
             f"{cc} {APP_NAME} · 按配置的逆序排列，后配的先撤",
+            (f"{cc} 已载入变更前配置（{len(self.baseline)} 条），覆盖型命令按原值恢复"
+             if self.baseline is not None else
+             f"{cc} 未载入变更前配置：只能撤销到默认值。点右上角「载入变更前配置」可精确回滚"),
             f"{cc} 执行前请先存档现网配置：display current-configuration / show running-config",
             cc + "=" * width,
         ]
@@ -1805,6 +1914,10 @@ class App(tk.Tk):
             "",
             "但要清楚它的边界：**网页版只做查阅，不做参数化生成**。",
             "要按自己的 VLAN 号、端口号生成命令，还是用这个 exe。",
+            "",
+            "手机上打开是能用的，但不用指望它替代电脑 —— 真调设备的时候，",
+            "一只手要在键盘上敲、一只手要翻笔记，屏幕再大也不够用。",
+            "手机上真正的用处是：机房里没带电脑，临时查一条命令怎么写。",
             "",
             "━━ 命令是怎么保证正确的 ━━",
             "",
