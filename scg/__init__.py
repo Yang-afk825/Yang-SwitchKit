@@ -4,6 +4,6 @@
 「代码里一个版本、界面显示另一个版本」的情况。
 """
 
-__version__ = "3.0.0"
+__version__ = "3.4.1"
 __all__ = ["model", "ports", "registry", "vendors", "explain", "project",
            "rollback", "blueprint", "audit", "diffcfg", "diagnose"]

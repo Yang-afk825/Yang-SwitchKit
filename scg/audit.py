@@ -78,7 +78,6 @@ _SIGNS = {
         ("Comware", 6),
         ("local-user", 2),
         ("system-view", 2),
-        ("vlan ", 1),
         ("sysname", 1),
     ),
     "huawei": (
@@ -97,6 +96,7 @@ _SIGNS = {
         ("ip cef", 3),
         ("hostname", 1),
         ("interface Vlan", 2),
+        ("switchport", 3),
     ),
     "ruijie": (
         ("enable service", 6),
@@ -105,6 +105,7 @@ _SIGNS = {
         ("port-group", 4),
         ("switch 1", 3),
         ("hostname", 1),
+        ("switchport", 3),
     ),
 }
 

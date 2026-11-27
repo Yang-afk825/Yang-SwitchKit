@@ -218,6 +218,16 @@ def apply(root: tk.Misc, scale: float = 1.0, dark: bool = False) -> ttk.Style:
     style.map("Ghost.TButton", background=[("active", HOVER)],
               foreground=[("active", FG)])
 
+    # 「一键转换」下拉：跟 Ghost 按钮同一个视觉重量，但带一个向下的箭头区。
+    # Menubutton 的箭头颜色由 arrowcolor 控制，不设的话在深色下会糊成一块。
+    style.configure("Convert.TMenubutton", background=PANEL, foreground=FG_DIM,
+                    bordercolor=BORDER, arrowcolor=FG_DIM,
+                    padding=(px(10), px(5)), font=FONT_UI_SM, relief="flat")
+    style.map("Convert.TMenubutton",
+              background=[("active", HOVER), ("pressed", SEL_BG)],
+              foreground=[("active", FG), ("pressed", ACCENT)],
+              arrowcolor=[("active", FG), ("pressed", ACCENT)])
+
     style.configure("Treeview", background=PANEL, fieldbackground=PANEL,
                     foreground=FG, bordercolor=BORDER_SOFT,
                     rowheight=px(26), font=FONT_UI, relief="flat")

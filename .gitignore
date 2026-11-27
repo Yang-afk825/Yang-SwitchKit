@@ -31,3 +31,7 @@ tools/_*.py
 *.swp
 Thumbs.db
 desktop.ini
+
+# ---- 公众号文章的派生网页（由 tools/md_to_wechat.py 从 md 生成）----
+# 里面是 base64 内嵌图，一次 190 KB，改了 md 就会变，没必要进版本库
+docs/公众号-*.html

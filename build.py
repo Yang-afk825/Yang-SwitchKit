@@ -93,6 +93,16 @@ def main() -> int:
         "--distpath", str(ROOT / "dist"),
         "--workpath", str(ROOT / "build"),
         "--specpath", str(ROOT / "build"),
+        # AI 模块是「点了才 import」的，虽然 PyInstaller 的字节码分析能跟上
+        # 函数体内的 import，这里还是显式写出来：少一次「打出来的 exe
+        # 在别的机器上点 AI 页签就崩」的排查
+        "--hidden-import", "scg.ai.config",
+        "--hidden-import", "scg.ai.provider",
+        "--hidden-import", "scg.ai.schema",
+        "--hidden-import", "scg.ai.rules",
+        "--hidden-import", "scg.ai.redact",
+        "--hidden-import", "scg.ai.intent",
+        "--hidden-import", "scg.ai.advise",
         # 这些库本项目没有用到，排除掉以缩小体积
         "--exclude-module", "numpy",
         "--exclude-module", "pandas",

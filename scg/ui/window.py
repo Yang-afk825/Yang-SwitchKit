@@ -15,14 +15,17 @@
 from __future__ import annotations
 
 import pathlib
+import queue
 import re
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .. import (__version__, audit, blueprint, compose, diagnose, diffcfg,
-                explain, project, registry, rollback, verify)
+from .. import (__version__, audit, blueprint, changekit, compose, convert,
+                diagnose, diffcfg, explain, project, registry, rollback, verify)
 from ..model import GenResult, Kind
 from ..vendors import VENDORS, generate, supports
+from . import ai_page
 from . import dpi
 from . import dnd
 from . import theme as T
@@ -32,6 +35,7 @@ APP_VERSION = "V" + __version__
 
 PAGE_MAIN = "一键生成配置命令"
 PAGE_DOC = "设备命令详解"
+PAGE_AI = "AI 助手"
 PAGE_AUDIT = "配置体检"
 PAGE_DIFF = "配置对比"
 PAGE_DIAG = "故障排查"
@@ -110,6 +114,20 @@ class App(tk.Tk):
         self.help_labels: list = []    # [(标签控件, 跨列数)]，随宽度调整折行
         self.cards: dict = {}          # 场景 key -> 状态标签
         self.gen_buttons: dict = {}    # 场景 key -> 「生成脚本」按钮
+        self.card_frames: dict = {}    # 场景 key -> 卡片外框，AI 回填后闪一下用它
+        self.ai_page = None            # AI 助手页，见 ui/ai_page.py
+
+        # ---- 配置体检的第二、三层（语法校对 / 在线语义） -------------
+        self._syntax = None            # (findings, unmatched)，见 ai/rules.py
+        self._ai_result = None         # 在线语义补充的结果，见 ai/advise.py
+        self._audit_queue: queue.Queue = queue.Queue()
+        self._audit_busy = False
+
+        # 上一次「一键转换」的说明，贴在脚本区最前面；手工切厂商时清空
+        self.convert_note: list = []   # [str]，见 convert.heading_lines()
+
+        # 从「AI 助手 → 从现网导入」读到的现状，导变更包时写进「变更前状态」
+        self._imported_snap = None
 
         self._status_timer = None
         self._sash_timer = None
@@ -128,6 +146,9 @@ class App(tk.Tk):
     # ==================================================================
 
     def _build_all(self) -> None:
+        # 切主题会把所有控件重建一遍，AI 页里用户敲了一半的话不能丢
+        snapshot = self._snapshot_ai()
+
         for child in list(self.children.values()):
             child.destroy()
 
@@ -136,6 +157,8 @@ class App(tk.Tk):
         self.help_labels.clear()
         self.cards.clear()
         self.gen_buttons.clear()
+        self.card_frames.clear()
+        self.ai_page = None
 
         self.rowconfigure(2, weight=1)
         self._build_banner()
@@ -143,6 +166,7 @@ class App(tk.Tk):
         self._build_pages()
         self._build_status()
 
+        self._restore_ai(snapshot)
         self._restore_fields()
         self._sync_gen_buttons()
         self._bind_dirty_tracking()
@@ -186,6 +210,7 @@ class App(tk.Tk):
 
         self.page_main = tk.Frame(self.pages, background=T.BG)
         self.page_doc = tk.Frame(self.pages, background=T.BG)
+        self.page_ai = tk.Frame(self.pages, background=T.BG)
         self.page_audit = tk.Frame(self.pages, background=T.BG)
         self.page_diff = tk.Frame(self.pages, background=T.BG)
         self.page_diag = tk.Frame(self.pages, background=T.BG)
@@ -193,6 +218,7 @@ class App(tk.Tk):
         self.page_help = tk.Frame(self.pages, background=T.BG)
         self.pages.add(self.page_main, text=PAGE_MAIN)
         self.pages.add(self.page_doc, text=PAGE_DOC)
+        self.pages.add(self.page_ai, text=PAGE_AI)
         self.pages.add(self.page_audit, text=PAGE_AUDIT)
         self.pages.add(self.page_diff, text=PAGE_DIFF)
         self.pages.add(self.page_diag, text=PAGE_DIAG)
@@ -201,11 +227,79 @@ class App(tk.Tk):
 
         self._build_main_page(self.page_main)
         self._build_doc_page(self.page_doc)
+        self.ai_page = ai_page.AIPage(self, self.page_ai)
         self._build_audit_page(self.page_audit)
         self._build_diff_page(self.page_diff)
         self._build_diag_page(self.page_diag)
         self._build_text_page(self.page_verify, verify.render_note())
         self._build_text_page(self.page_help, self._help_lines())
+
+    # ------------------------------------------------------------------
+    # AI 页在切主题重建时的状态保存
+    # ------------------------------------------------------------------
+
+    def _snapshot_ai(self):
+        page = self.ai_page
+        if page is None:
+            return None
+        try:
+            return {
+                "intent": page.intent_input.get("1.0", "end").rstrip("\n"),
+                "local": page._local_text,
+                "peer": page._peer_text,
+                "peer_label": page._peer_label,
+                "ctx": page._pair_ctx,
+            }
+        except tk.TclError:
+            return None
+
+    def _restore_ai(self, snapshot) -> None:
+        if not snapshot or self.ai_page is None:
+            return
+        page = self.ai_page
+        try:
+            page.intent_input.delete("1.0", "end")
+            page.intent_input.insert("1.0", snapshot.get("intent", ""))
+
+            page._local_text = snapshot.get("local", "")
+            page._peer_text = snapshot.get("peer", "")
+            page._peer_label = snapshot.get("peer_label", "")
+            page._pair_ctx = snapshot.get("ctx")
+            page._render_commands()
+            page._refresh_peer_btn()
+        except tk.TclError:
+            pass
+
+    # ------------------------------------------------------------------
+    # AI 回填之后的两下反馈：滚过去 + 闪一下
+    # ------------------------------------------------------------------
+
+    def _scroll_to_card(self, scenario_key: str) -> None:
+        """把参数区滚到指定场景。AI 改完参数不滚过去，用户根本看不见。"""
+        frame = self.card_frames.get(scenario_key)
+        if frame is None:
+            return
+        self.canvas.update_idletasks()
+        total = self.form.winfo_height()
+        if total <= 0:
+            return
+        self.canvas.yview_moveto(max(0.0, min(1.0, frame.winfo_y() / total)))
+
+    def _flash_card(self, scenario_key: str) -> None:
+        """卡片外框闪两下，告诉用户「改的是这一块」。"""
+        frame = self.card_frames.get(scenario_key)
+        if frame is None:
+            return
+
+        def blink(left: int) -> None:
+            try:
+                frame.configure(background=T.ACCENT if left % 2 else T.BORDER_SOFT)
+            except tk.TclError:
+                return
+            if left > 0:
+                self.after(240, lambda: blink(left - 1))
+
+        blink(4)
 
     def _build_status(self) -> None:
         self.status = ttk.Label(self, text="", style="Faint.TLabel", anchor="w")
@@ -311,6 +405,10 @@ class App(tk.Tk):
                    command=self._copy).pack(side="left")
         ttk.Button(foot, text="导出", style="Ghost.TButton",
                    command=self._export).pack(side="left", padx=T.px(6))
+        # 交付用：命令 + 回滚 + 验收 + 影响范围打成一份，写变更单直接贴
+        ttk.Button(foot, text="变更包", style="Ghost.TButton",
+                   command=self._export_changekit).pack(side="left",
+                                                        padx=(0, T.px(6)))
         ttk.Button(foot, text="清空", style="Ghost.TButton",
                    command=self._clear_all).pack(side="left")
         ttk.Checkbutton(foot, text="保留注释", variable=self.show_comment,
@@ -347,8 +445,18 @@ class App(tk.Tk):
                             command=self._on_vendor_change).pack(side="left",
                                                                  padx=(0, T.px(12)))
 
+        # 一键转换：把当前这套参数整套搬到另一家厂商。
+        # 菜单内容在弹出前由 postcommand 现算，所以切过厂商之后目标列表自动就对。
+        self.convert_menu = tk.Menu(strip, tearoff=0)
+        self.convert_menu.configure(postcommand=self._refresh_convert_menu)
+        self.convert_btn = ttk.Menubutton(strip, text="一键转换",
+                                          style="Convert.TMenubutton",
+                                          direction="below")
+        self.convert_btn["menu"] = self.convert_menu
+        self.convert_btn.grid(row=0, column=2, sticky="e", padx=(0, T.px(8)))
+
         ttk.Button(strip, text="生成全部场景", style="Gen.TButton",
-                   command=self._gen_all).grid(row=0, column=2, sticky="e")
+                   command=self._gen_all).grid(row=0, column=3, sticky="e")
 
         self.strip_hint = ttk.Label(pane, text="", style="Faint.TLabel", anchor="w")
         self.strip_hint.grid(row=1, column=0, sticky="ew", padx=T.px(16),
@@ -392,6 +500,7 @@ class App(tk.Tk):
         # 外层 1px 边框 + 内层白底，做出卡片感
         outer = tk.Frame(parent, background=T.BORDER_SOFT)
         outer.pack(fill="x", padx=T.px(8), pady=(0, T.px(10)))
+        self.card_frames[scenario.key] = outer
         card = tk.Frame(outer, background=T.PANEL)
         card.pack(fill="both", expand=True, padx=1, pady=1)
 
@@ -634,8 +743,18 @@ class App(tk.Tk):
                    command=self._run_audit).pack(side="left")
         ttk.Button(foot, text="清空", style="Ghost.TButton",
                    command=self._clear_audit).pack(side="left", padx=T.px(6))
-        ttk.Label(foot, text="只解析这段文本，不连设备也不上传",
-                  style="Faint.TLabel").pack(side="right")
+
+        # AI 补充是第三层，默认不勾。前两层已经能查掉大部分，联网应该是
+        # 用户主动选的动作，不该悄悄发生
+        self.audit_ai_var = tk.BooleanVar(value=False)
+        self.audit_ai_chk = ttk.Checkbutton(
+            foot, text="AI 补充语义层", variable=self.audit_ai_var,
+            command=self._on_audit_ai_toggle)
+        self.audit_ai_chk.pack(side="left", padx=(T.px(10), 0))
+
+        self.audit_hint = ttk.Label(foot, text="只解析这段文本，不连设备也不上传",
+                                    style="Faint.TLabel")
+        self.audit_hint.pack(side="right")
 
         # ---- 右：报告区 ----------------------------------------------
         right = tk.Frame(paned, background=T.PANEL)
@@ -685,20 +804,132 @@ class App(tk.Tk):
         self._refresh_audit()
 
     def _run_audit(self) -> None:
+        """三层检查：安全体检 → 语法校对 → 在线语义补充。
+
+        前两层都是离线的、毫秒级的，所以先跑完再把报告画出来；
+        第三层要联网，放到后台线程，出来什么补什么。
+        """
         self.audit_source = self.audit_in.get("1.0", "end").rstrip("\n")
-        report = audit.analyze(self.audit_source)
-        self._last_audit = report
-        self._refresh_audit()
-        if not report.findings:
+        if not self.audit_source.strip():
             self._flash("还没有内容。把设备的配置整段粘到左边，再点「开始体检」")
             return
+
+        report = audit.analyze(self.audit_source)
+        self._last_audit = report
+        self._ai_result = None
+
+        # 第二层：语法与结构校对
+        self._syntax = self._run_syntax(report)
+        self._refresh_audit()
+
+        syntax_findings = (self._syntax or ([], []))[0]
         self._flash(f"体检完成：健康分 {report.score}/100，"
-                    f"高危 {len(report.high)} 项、中危 {len(report.mid)} 项")
+                    f"高危 {len(report.high)} 项、中危 {len(report.mid)} 项，"
+                    f"语法问题 {len(syntax_findings)} 处")
+
+        # 第三层：在线语义补充（可选）
+        if self.audit_ai_var.get():
+            self._run_audit_ai()
+
+    def _run_syntax(self, report):
+        """语法校对。按体检检测出的厂商走，比用户在主页选的那个更准。"""
+        try:
+            from ..ai import rules
+        except Exception:  # noqa: BLE001 —— AI 包缺失不该影响体检
+            return None
+
+        vendor = getattr(report, "vendor_key", "") or self.vendor_key
+        if not vendor:
+            return None
+        try:
+            return rules.check(vendor, self.audit_source or "")
+        except Exception:  # noqa: BLE001
+            return None
+
+    # ------------------------------------------------------------------
+    # 第三层：在线语义补充
+    # ------------------------------------------------------------------
+
+    def _on_audit_ai_toggle(self) -> None:
+        if self.audit_ai_var.get():
+            self.audit_hint.configure(text="勾选后会把脱敏过的文本发给模型")
+        else:
+            self.audit_hint.configure(text="只解析这段文本，不连设备也不上传")
+
+    def _run_audit_ai(self) -> None:
+        if self._audit_busy:
+            return
+
+        try:
+            from ..ai import advise
+            from ..ai import config as aicfg
+        except Exception as exc:  # noqa: BLE001
+            self._set_ai_error(f"AI 模块不可用：{exc}")
+            return
+
+        cfg = aicfg.load()
+        if not cfg.ready():
+            self._set_ai_error("还没配置接口和密钥，去「AI 助手」页右上角设置")
+            return
+
+        known = advise.known_titles(self._last_audit,
+                                    (self._syntax or ([], []))[0])
+        vendor = getattr(self._last_audit, "vendor_key", "") or self.vendor_key
+        text = self.audit_source
+
+        self._audit_busy = True
+        self._ai_result = None
+        self.audit_hint.configure(text="正在做语义分析…")
+        self._refresh_audit()
+
+        def run():
+            try:
+                data = advise.review(text, vendor, known, cfg)
+            except Exception as exc:  # noqa: BLE001 —— worker 里任何异常都要回主线程
+                data = {"findings": [], "note": "", "redacted": 0,
+                        "error": f"在线分析失败：{exc}"}
+            self._audit_queue.put(data)
+
+        threading.Thread(target=run, daemon=True).start()
+        self.after(120, self._audit_ai_poll)
+
+    def _set_ai_error(self, message: str) -> None:
+        self._ai_result = {"findings": [], "note": "", "redacted": 0,
+                           "error": message}
+        self._refresh_audit()
+
+    def _audit_ai_poll(self) -> None:
+        # 切主题会把这一页整个重建，旧的轮询得自己退场
+        try:
+            if not self.audit_out.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        try:
+            data = self._audit_queue.get_nowait()
+        except queue.Empty:
+            if self._audit_busy:
+                self.after(120, self._audit_ai_poll)
+            return
+
+        self._audit_busy = False
+        self._ai_result = data
+        self._on_audit_ai_toggle()
+        self._refresh_audit()
+
+        if data.get("error"):
+            self._flash(f"AI 补充没跑成：{data['error']}")
+        else:
+            count = len(data.get("findings") or [])
+            self._flash(f"AI 补充完成，新增 {count} 条")
 
     def _clear_audit(self) -> None:
         self.audit_in.delete("1.0", "end")
         self.audit_source = ""
         self._last_audit = None
+        self._syntax = None
+        self._ai_result = None
         self._refresh_audit()
         self._flash("已清空体检内容")
 
@@ -715,6 +946,8 @@ class App(tk.Tk):
         self.audit_out.delete("1.0", "end")
         for line in lines:
             self.audit_out.insert("end", line + "\n", self._audit_tag(line))
+        self._append_syntax()
+        self._append_ai()
         self.audit_out.configure(state="disabled")
 
         if report and report.findings:
@@ -726,6 +959,81 @@ class App(tk.Tk):
             self, "audit_source", "") else 0
         self.audit_meta.configure(
             text=f"{source_lines} 行" if source_lines else "尚未粘贴")
+
+    def _append_syntax(self) -> None:
+        """把语法校对结果接在体检报告后面。第二层。"""
+        syntax = self._syntax
+        if not syntax:
+            return
+        findings, unmatched = syntax
+        out = self.audit_out
+
+        out.insert("end", "\n")
+        out.insert("end", "━━ 语法与结构校对 ━━\n", "h1")
+
+        if not findings and not unmatched:
+            out.insert("end", "  命令都落在该落的视图里，没发现语法问题。\n", "ok")
+            return
+
+        labels = {"error": "错误", "warn": "警告", "info": "提示"}
+        tags = {"error": "bad", "warn": "warn", "info": "dim"}
+        for item in findings:
+            where = f"第 {item.line} 行" if item.line else "整段"
+            out.insert("end",
+                       f"  [{labels.get(item.level, '提示')}] {where}　{item.message}\n",
+                       tags.get(item.level, "body"))
+            if item.text:
+                out.insert("end", f"      {item.text}\n", "syntax")
+            if item.evidence:
+                out.insert("end", f"      依据：{item.evidence}\n", "dim")
+            if item.fix:
+                out.insert("end", f"      建议：{item.fix}\n", "dim")
+
+        if unmatched:
+            out.insert("end",
+                       f"\n  {len(unmatched)} 行不在已知语法库内"
+                       f"（可能是版本差异，也可能拼错了）：\n", "dim")
+            for item in unmatched:
+                out.insert("end", f"      第 {item['line']} 行  {item['text']}\n",
+                           "syntax")
+                if item.get("suggest"):
+                    out.insert("end", f"          最接近：{item['suggest']}\n", "dim")
+
+    def _append_ai(self) -> None:
+        """把在线语义补充接在报告最后。第三层。"""
+        data = self._ai_result
+        if data is None:
+            return
+        out = self.audit_out
+
+        out.insert("end", "\n")
+        out.insert("end", "━━ AI 补充（语义层） ━━\n", "h1")
+
+        if data.get("error"):
+            out.insert("end", f"  没跑成：{data['error']}\n", "dim")
+            return
+
+        if data.get("redacted"):
+            out.insert("end", f"  已脱敏 {data['redacted']} 处，原文只在本机\n", "dim")
+
+        findings = data.get("findings") or []
+        if not findings:
+            out.insert("end", "  前两层之外没有发现新问题。\n", "ok")
+
+        labels = {"high": "高危", "mid": "中危", "low": "建议"}
+        tags = {"high": "bad", "mid": "warn", "low": "dim"}
+        for item in findings:
+            where = f"第 {item['line']} 行" if item.get("line") else "整段"
+            out.insert("end",
+                       f"  [{labels.get(item['level'], '建议')}] {where}　"
+                       f"{item['message']}\n", tags.get(item["level"], "body"))
+            if item.get("evidence"):
+                out.insert("end", f"      依据：{item['evidence']}\n", "dim")
+            if item.get("fix"):
+                out.insert("end", f"      建议：{item['fix']}\n", "dim")
+
+        if data.get("note"):
+            out.insert("end", f"\n  {data['note']}\n", "dim")
 
     @staticmethod
     def _audit_tag(line: str) -> str:
@@ -1441,7 +1749,19 @@ class App(tk.Tk):
         if key == self.vendor_key:
             return
         self._save_fields()
+        self.convert_note = []      # 手工换厂商，上一次转换的说明不再适用
+        self._switch_vendor(key)
+        self._flash(f"已切换到 {self._vendor().name}，"
+                    f"重新生成了 {len(self.order)} 个场景")
+
+    def _switch_vendor(self, key: str) -> None:
+        """切到另一家厂商，并把已生成的场景按新厂商重算一遍。
+
+        调用前必须先 ``_save_fields()``，否则当前厂商刚填的值还留在控件里、
+        没进 ``store``，切走就丢了。转换流程复用这一段，所以它单独拆出来。
+        """
         self.vendor_key = key
+        self.vendor_var.set(key)    # Radiobutton 的 command 只在点击时触发，这里不会误触
 
         vendor = self._vendor()
         self.strip_hint.configure(text=f"{vendor.platform}　|　{vendor.port_hint}")
@@ -1468,9 +1788,96 @@ class App(tk.Tk):
         if hasattr(self, "diag_out"):
             self._show_case()
 
+        # AI 页的「生成厂商」跟着走：主页选了华为，回 AI 页还按 H3C 抽参数，
+        # 端口编号就会对不上
+        if getattr(self, "ai_page", None) is not None:
+            self.ai_page.sync_vendor()
+
         self._refresh_output(keep_scroll=False)
         self._refresh_doc()
-        self._flash(f"已切换到 {vendor.name}，重新生成了 {len(self.order)} 个场景")
+
+    # ==================================================================
+    # 一键转换：整套参数搬到另一家厂商
+    # ==================================================================
+
+    def _refresh_convert_menu(self) -> None:
+        """菜单弹出前现算目标列表 —— 当前厂商不列进去。"""
+        menu = self.convert_menu
+        menu.delete(0, "end")
+        menu.configure(background=T.PANEL, foreground=T.FG,
+                       activebackground=T.SEL_BG, activeforeground=T.ACCENT,
+                       bd=0, relief="flat", activeborderwidth=0,
+                       font=T.FONT_UI_SM)
+        targets = [v for v in VENDORS if v.key != self.vendor_key]
+        if not targets:
+            return
+        for vendor in targets:
+            menu.add_command(label=f"转换为 {vendor.name}",
+                             command=lambda k=vendor.key: self._convert_to(k))
+        menu.add_separator()
+        menu.add_command(label=f"共 {len(self.order)} 个已生成场景会一起转换",
+                         state="disabled")
+
+    def _convert_to(self, dst_key: str) -> None:
+        """把当前厂商已生成的场景整套转换到另一家厂商。
+
+        只转换「已经生成过」的场景 —— 没生成的场景参数可能压根没填过，
+        搬过去只会带一堆默认值。
+        """
+        if dst_key == self.vendor_key:
+            return
+
+        self._save_fields()
+        todo = [k for k in self.order if k in self.results]
+        if not todo:
+            messagebox.showinfo(
+                "还没有可转换的内容",
+                "左侧脚本区还是空的。\n\n"
+                "先在右侧填好参数，点某个场景的「生成脚本」，"
+                "或右上角的「生成全部场景」，再回来做转换。",
+                parent=self)
+            return
+
+        src_key = self.vendor_key
+        src = self._vendor()
+        dst = next(v for v in VENDORS if v.key == dst_key)
+
+        report: list = []
+        moved = 0
+        skipped: list = []
+        for scenario_key in todo:
+            scenario = registry.get(scenario_key)
+            if not supports(dst_key, scenario_key):
+                skipped.append(scenario.name)
+                continue
+            params = self.store.get((src_key, scenario_key))
+            if params is None:
+                params = {p.key: p.default for p in scenario.params}
+            new_params, pairs = convert.convert_params(
+                params, scenario, src_key, dst_key)
+            self.store[(dst_key, scenario_key)] = new_params
+            moved += 1
+            for pair in pairs:
+                if pair not in report:
+                    report.append(pair)
+
+        if not moved:
+            messagebox.showinfo(
+                "没有可转换的场景",
+                f"{dst.name} 不支持当前已生成的全部场景，没有可搬过去的内容。",
+                parent=self)
+            return
+
+        self.convert_note = convert.heading_lines(src.name, dst.name, report)
+        self._switch_vendor(dst_key)
+
+        msg = f"已把 {moved} 个场景转换到 {dst.name}"
+        if report:
+            msg += f"，{len(report)} 处端口编号已换算，请核对面板编号"
+        if skipped:
+            msg += f"；{len(skipped)} 个场景 {dst.name} 不支持，已跳过"
+        self._flash(msg)
+        self._mark_dirty()
 
     # ==================================================================
     # 方案文件：保存 / 打开
@@ -1741,6 +2148,11 @@ class App(tk.Tk):
             "# 下发前请核对软件版本与端口名",
             "#" + "=" * width,
         ]
+        if self.convert_note:
+            out.append("#" + "-" * width)
+            for line in self.convert_note:
+                out.append(f"# [转换] {line}")
+            out.append("#" + "-" * width)
         for index, key in enumerate(keys, 1):
             scenario = registry.get(key)
             result = self.results[key]
@@ -2011,6 +2423,55 @@ class App(tk.Tk):
             return
         self._flash(f"已导出：{path}")
 
+    def _export_changekit(self) -> None:
+        """导出一份变更包：现状 / 命令 / 回滚 / 验收 / 影响范围。
+
+        写变更单的时候要的五样东西，这里一次给全。散在四个页签里挨个点、
+        再手工拼到一起，是交付时最烦的一步。
+        """
+        keys = self._active_keys()
+        if not keys:
+            messagebox.showinfo("没有内容",
+                                "脚本区还是空的。先生成几个场景，再导变更包。",
+                                parent=self)
+            return
+
+        results = {k: self.results[k] for k in keys if k in self.results}
+        if not results:
+            messagebox.showinfo("没有内容", "还没有生成成功的场景。", parent=self)
+            return
+
+        items = [(k, self.store.get((self.vendor_key, k), {})) for k in keys
+                 if k in results]
+        vendor_name = self._vendor().name
+
+        try:
+            lines = changekit.build(self.vendor_key, vendor_name, items, results,
+                                    snap=getattr(self, "_imported_snap", None))
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("生成变更包失败", str(exc), parent=self)
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="保存变更包",
+            defaultextension=".txt",
+            initialfile=changekit.filename(vendor_name, items),
+            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            pathlib.Path(path).write_text("\n".join(lines), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("保存失败", str(exc), parent=self)
+            return
+
+        has_snap = getattr(self, "_imported_snap", None) is not None
+        note = "" if has_snap else "（没导入现网配置，「变更前状态」那段是空的）"
+        self._flash(f"变更包已保存：{pathlib.Path(path).name} {note}",
+                    style="OK.TLabel")
+
     # ==================================================================
     # 状态栏 / 杂项
     # ==================================================================
@@ -2069,6 +2530,34 @@ class App(tk.Tk):
             "   想一次全要，就点最上面的「生成全部场景」。",
             "4. 点「复制脚本」直接粘到设备终端，或点「导出」存成 txt。",
             "5. 想搞清楚每条命令在干嘛，切到「设备命令详解」页。",
+            "",
+            "━━ AI 助手（可选，不配置也不影响使用） ━━",
+            "",
+            "「AI 助手」页可以说一句话就把参数填进表单：说「给 VLAN 10 20 30 划 8 个",
+            "access 口」，它识别场景、抽出参数、回填到主页面并生成命令。",
+            "",
+            "不配置就完全不联网。要用的话点那一页右上角「设置」，填接口地址、模型名",
+            "和密钥。地址填 OpenAI 兼容的就行——DeepSeek、通义、智谱、本地 ollama",
+            "都能用，换一家只改地址，不用换版本。密钥存在 %APPDATA% 下，用 Windows",
+            "自带的 DPAPI 加密，只有本机能解开，也不会写进方案文件。",
+            "",
+            "有一条要记住：AI 只负责填参数，命令始终由本工具的模板拼出来。",
+            "它不写命令，也不改你的配置。",
+            "",
+            "━━ 配置体检：三层检查 ━━",
+            "",
+            "把 display current-configuration / show running-config 的输出整段粘到",
+            "「配置体检」页左边，点「开始体检」，右边会分三层给结论：",
+            "",
+            "第一层 安全体检（离线）：SNMP 团体名、VLAN1 当管理口、没配 NTP、",
+            "        空闲端口没关、密码强度这些，出健康分和可直接粘的修复命令。",
+            "第二层 语法校对（离线）：命令跑没跑在对的视图、基础 ACL 是不是带了",
+            "        协议字段、端口编号符不符合厂商惯例、关键字有没有拼错。",
+            "第三层 AI 补充（可选，要联网）：前两层都是单点判定，这一层补需要读懂",
+            "        整段配置才能发现的问题——配置互相冲突、缺配套命令、策略顺序。",
+            "",
+            "前两层不联网也能跑，粘完点一下就有结果。第三层要在左下角勾选，",
+            "勾了才会把脱敏过的文本发给模型，没勾就一个字节都不出本机。",
             "",
             "━━ 想要「复制即用」的纯命令 ━━",
             "",
