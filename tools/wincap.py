@@ -89,6 +89,19 @@ def grab_window(widget) -> Image.Image:
     return grab_hwnd(top_level_hwnd(widget))
 
 
+def grab_toplevel(widget) -> Image.Image:
+    """抓一个 Toplevel（对话框 / 弹窗）自己的画面。
+
+    ``grab_window`` 会一路往上追到根窗口，对弹窗来说就抓到主界面去了。
+    Toplevel 的窗口有 owner（主窗口），``GetParent`` 会返回 owner，
+    所以这里只往上一层，拿到它自己的 wrapper 就停。
+    """
+    widget.update_idletasks()
+    hwnd = int(widget.winfo_id())
+    wrapper = user32.GetParent(hwnd)
+    return grab_hwnd(wrapper or hwnd)
+
+
 def grab_hwnd(hwnd: int, client_only: bool = True) -> Image.Image:
     """抓任意窗口句柄的画面。
 
